@@ -1,0 +1,15 @@
+[package]
+name = "rc-car"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+anyhow = "1"
+esp-idf-hal = "0.45"
+esp-idf-svc = "0.50"
+
+[target.'cfg(target_os = "espidf")'.build-dependencies]
+embuild = "0.33"
+
