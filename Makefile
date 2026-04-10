@@ -5,6 +5,7 @@ TARGET ?= xtensa-esp32s3-espidf
 HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 PROFILE ?= release
 BAUD ?= 460800
+MONITOR_BAUD ?= 115200
 PORT ?=
 EXTRA_FLASH_ARGS ?=
 ESP_ENV_SCRIPT ?= ${HOME}/export-esp.sh
@@ -21,7 +22,7 @@ PORT_ARG := $(if $(PORT),--port $(PORT),)
 ESP_BIN := target/$(TARGET)/$(PROFILE_DIR)/$(APP_NAME)
 HOST_BIN := target/$(HOST_TARGET)/debug/$(APP_NAME)
 
-.PHONY: help source-tool check-rust check-target check-espflash build-host build-esp flash clean
+.PHONY: help source-tool check-rust check-target check-espflash build-host build-esp flash monitor clean
 
 source-tool:
 	@. "$(ESP_ENV_SCRIPT)" && export ESP_IDF_TOOLS_INSTALL_DIR=global
@@ -43,6 +44,9 @@ build-esp:
 
 flash: build-esp check-espflash
 	$(ESPFLASH) flash $(PORT_ARG) --baud $(BAUD) $(EXTRA_FLASH_ARGS) $(ESP_BIN)
+
+monitor: check-espflash
+	$(ESPFLASH) monitor $(PORT_ARG) --baud $(MONITOR_BAUD)
 
 clean:
 	$(CARGO) clean

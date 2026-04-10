@@ -1088,6 +1088,7 @@ dependencies = [
  "embuild",
  "esp-idf-hal",
  "esp-idf-svc",
+ "log",
 ]
 
 [[package]]

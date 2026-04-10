@@ -1,6 +1,8 @@
 use rc_car::CarCommand;
 #[cfg(target_os = "espidf")]
 use rc_car::MotorCommand;
+#[cfg(target_os = "espidf")]
+use log;
 
 // ── ESP-IDF target ────────────────────────────────────────────────────────────
 
@@ -8,7 +10,6 @@ use rc_car::MotorCommand;
 use esp_idf_hal::gpio::{Output, PinDriver};
 #[cfg(target_os = "espidf")]
 use esp_idf_hal::ledc::LedcDriver;
-use esp_idf_svc::log;
 
 /// Hardware driver for four DC motors wired through two TB6612FNG chips.
 ///
@@ -81,6 +82,7 @@ fn main() -> anyhow::Result<()> {
 
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    log::info!("ESP32-S3 Motor Controller booting...");
 
     let peripherals = Peripherals::take()
         .map_err(|_| anyhow::anyhow!("Failed to take peripherals"))?;
@@ -132,7 +134,7 @@ fn main() -> anyhow::Result<()> {
         ];
 
         for (label, cmd) in sequence {
-            println!("→ {label}");
+            log::info!("→ {label}");
             controller.apply(cmd)?;
             FreeRtos::delay_ms(1500);
         }
