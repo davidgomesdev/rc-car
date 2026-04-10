@@ -6,12 +6,34 @@ This project drives a DC motor through a Keyestudio KS0066 (TB6612FNG) motor dri
 
 Default pin mapping in `src/main.rs`:
 
-- `GPIO4` -> `PWMA` (PWM)
-- `GPIO5` -> `AIN1`
-- `GPIO6` -> `AIN2`
+Motor 1 (right):
+- top:
+  - `GPIO4` -> `PWMA` (PWM)
+  - `GPIO5` -> `AIN2`
+  - `GPIO6` -> `AIN1`
+- bottom:
+  - `GPIO7` -> `BIN1`
+  - `GPIO5` -> `BIN2`
+  - `GPIO16` -> `PWMB` (PWM)
+
+Motor 2 (left):
+- top:
+  - `GPIO40` -> `PWMA` (PWM)
+  - `GPIO39` -> `AIN2`
+  - `GPIO38` -> `AIN1`
+- bottom:
+  - `GPIO37` -> `BIN1`
+  - `GPIO36` -> `BIN2`
+  - `GPIO35` -> `PWMB` (PWM)
+
+Both motors:
 - Set `STBY` high (or wire it to a GPIO and drive it high in software)
 - ESP32-S3 `GND` -> common `GND`
 - External motor power to the driver (`VM` / `VCC_MOTOR`), not directly from the ESP32 pin
+
+## ESP32-S3 reserved GPIO pins
+
+Avoid using: GPIOs 0, 19, 20, 45, 46
 
 ## Host Simulation (quick sanity check)
 
