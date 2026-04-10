@@ -7,16 +7,16 @@ fn main() -> anyhow::Result<()> {
     use esp_idf_hal::ledc::config::TimerConfig;
     use esp_idf_hal::ledc::{LedcDriver, LedcTimerDriver};
     use esp_idf_hal::peripherals::Peripherals;
-    use esp_idf_hal::prelude::*;
+    use esp_idf_hal::units::*;
 
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    let peripherals = Peripherals::take().ok_or_else(|| anyhow::anyhow!("Failed to take peripherals"))?;
+    let peripherals = Peripherals::take().map_err(|_| anyhow::anyhow!("Failed to take peripherals"))?;
 
     // Keyestudio KS0066 (TB6612FNG) wiring for channel A:
     // PWMA (PWM) -> GPIO4, AIN1 -> GPIO5, AIN2 -> GPIO6, STBY -> HIGH
-    let timer_cfg = TimerConfig::default().frequency(25.kHz().into());
+    let timer_cfg = TimerConfig::default().frequency(25_u32.kHz().into());
     let timer = LedcTimerDriver::new(peripherals.ledc.timer0, &timer_cfg)?;
     let mut pwm = LedcDriver::new(peripherals.ledc.channel0, &timer, peripherals.pins.gpio4)?;
     let mut in1 = PinDriver::output(peripherals.pins.gpio5)?;
@@ -39,8 +39,8 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "espidf")]
 fn apply_motor_command(
-    in1: &mut esp_idf_hal::gpio::PinDriver<'_, esp_idf_hal::gpio::Gpio5, esp_idf_hal::gpio::Output>,
-    in2: &mut esp_idf_hal::gpio::PinDriver<'_, esp_idf_hal::gpio::Gpio6, esp_idf_hal::gpio::Output>,
+    in1: &mut esp_idf_hal::gpio::PinDriver<'_, esp_idf_hal::gpio::Output>,
+    in2: &mut esp_idf_hal::gpio::PinDriver<'_, esp_idf_hal::gpio::Output>,
     pwm: &mut esp_idf_hal::ledc::LedcDriver<'_>,
     command: MotorCommand,
 ) -> anyhow::Result<()> {

@@ -10,7 +10,7 @@ Default pin mapping in `src/main.rs`:
 - `GPIO5` -> `AIN1`
 - `GPIO6` -> `AIN2`
 - Set `STBY` high (or wire it to a GPIO and drive it high in software)
-- ESP32-S3 `GND` -> motor driver `GND`
+- ESP32-S3 `GND` -> common `GND`
 - External motor power to the driver (`VM` / `VCC_MOTOR`), not directly from the ESP32 pin
 
 ## Host Simulation (quick sanity check)
