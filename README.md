@@ -12,8 +12,8 @@ Motor 1 (right):
   - `GPIO5` -> `AIN2`
   - `GPIO6` -> `AIN1`
 - bottom:
-  - `GPIO7` -> `BIN1`
-  - `GPIO15` -> `BIN2`
+  - `GPIO15` -> `BIN1`
+  - `GPIO7` -> `BIN2`
   - `GPIO16` -> `PWMB` (PWM)
 
 Motor 2 (left):
@@ -25,8 +25,6 @@ Motor 2 (left):
   - `GPIO37` -> `BIN1`
   - `GPIO36` -> `BIN2`
   - `GPIO35` -> `PWMB` (PWM)
-
-Wiring note: channel A are up, B are down; X2s go backward X1s go forwards. 
 
 Both motors:
 - Set `STBY` high (or wire it to a GPIO and drive it high in software)

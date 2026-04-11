@@ -87,8 +87,8 @@ fn main() -> anyhow::Result<()> {
         },
         rear_right: EspMotorDriver {
             pwm: LedcDriver::new(peripherals.ledc.channel1, &timer, peripherals.pins.gpio16)?,
-            in1: PinDriver::output(peripherals.pins.gpio7)?,
-            in2: PinDriver::output(peripherals.pins.gpio15)?,
+            in1: PinDriver::output(peripherals.pins.gpio15)?,
+            in2: PinDriver::output(peripherals.pins.gpio7)?,
         },
         front_left: EspMotorDriver {
             pwm: LedcDriver::new(peripherals.ledc.channel2, &timer, peripherals.pins.gpio40)?,
