@@ -10,6 +10,7 @@ anyhow = "1"
 log = "0.4"
 esp-idf-hal = "0.46.2"
 esp-idf-svc = "0.52.1"
+embedded-svc = "0.29"
 
 [build-dependencies]
 embuild = { version = "0.33", features = ["espidf"] }

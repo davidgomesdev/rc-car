@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>RC Car</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d0d0d;
+      color: #e0e0e0;
+      font-family: system-ui, sans-serif;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 16px;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    header { text-align: center; }
+    h1 { font-size: 1.4em; letter-spacing: 4px; color: #0af; margin-bottom: 4px; }
+
+    #status {
+      font-size: 0.75em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+    }
+    #dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #f44;
+      transition: background 0.3s;
+    }
+    #dot.ok { background: #3f3; }
+    #status-text { color: #777; }
+
+    .speed-row {
+      width: 100%;
+      max-width: 300px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .speed-row span { font-size: 0.8em; color: #888; white-space: nowrap; }
+    #speed-val { color: #0af; font-weight: bold; min-width: 38px; text-align: right; }
+    #speed { flex: 1; accent-color: #0af; cursor: pointer; }
+
+    .pad {
+      display: grid;
+      grid-template-columns: repeat(3, 90px);
+      grid-template-rows: repeat(3, 90px);
+      gap: 10px;
+    }
+
+    .btn {
+      background: #1c1c1c;
+      border: 2px solid #2e2e2e;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2em;
+      cursor: pointer;
+      transition: background 0.08s, border-color 0.08s, color 0.08s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn.empty { background: transparent; border: none; pointer-events: none; }
+    .btn.active { background: #09202e; border-color: #0af; color: #0af; }
+    #btn-stop { background: #1c0e0e; border-color: #3a1515; }
+    #btn-stop.active { background: #2a0808; border-color: #f44; color: #f44; }
+
+    .hint { font-size: 0.7em; color: #444; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🚗 RC CAR</h1>
+    <div id="status">
+      <div id="dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
+  </header>
+
+  <div class="speed-row">
+    <span>Speed</span>
+    <input type="range" id="speed" min="10" max="100" value="75">
+    <span id="speed-val">75%</span>
+  </div>
+
+  <!--
+    Layout:
+      [↺ SL]  [ ▲ F ]  [↻ SR]
+      [◀  L]  [ ■ S ]  [▶  R]
+      [ --- ]  [ ▼ B ]  [ --- ]
+  -->
+  <div class="pad">
+    <div class="btn" id="btn-sl" data-cmd="SL">↺</div>
+    <div class="btn" id="btn-f"  data-cmd="F">▲</div>
+    <div class="btn" id="btn-sr" data-cmd="SR">↻</div>
+    <div class="btn" id="btn-l"  data-cmd="L">◀</div>
+    <div class="btn" id="btn-stop" data-cmd="S">■</div>
+    <div class="btn" id="btn-r"  data-cmd="R">▶</div>
+    <div class="btn empty"></div>
+    <div class="btn" id="btn-b"  data-cmd="B">▼</div>
+    <div class="btn empty"></div>
+  </div>
+
+  <p class="hint">Hold a button to drive · Release to stop</p>
+
+  <script>
+    const dot        = document.getElementById('dot');
+    const statusText = document.getElementById('status-text');
+    const speedEl    = document.getElementById('speed');
+    const speedValEl = document.getElementById('speed-val');
+
+    let ws = null;
+    let activeBtn = null;
+
+    // ── Speed slider ──────────────────────────────────────────────────────
+    speedEl.addEventListener('input', () => {
+      speedValEl.textContent = speedEl.value + '%';
+    });
+
+    // ── WebSocket helpers ─────────────────────────────────────────────────
+    function setStatus(ok, msg) {
+      dot.className = ok ? 'ok' : '';
+      statusText.textContent = msg;
+    }
+
+    function send(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg);
+    }
+
+    function connect() {
+      setStatus(false, 'Connecting…');
+      ws = new WebSocket('ws://' + location.host + '/ws');
+      ws.onopen  = () => setStatus(true, 'Connected');
+      ws.onclose = () => {
+        setStatus(false, 'Reconnecting…');
+        releaseBtn(); // safety stop
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    // ── Button press / release ────────────────────────────────────────────
+    function pressBtn(btn) {
+      if (activeBtn && activeBtn !== btn) releaseBtn();
+      activeBtn = btn;
+      btn.classList.add('active');
+      const cmd = btn.dataset.cmd;
+      send(cmd === 'S' ? 'S' : cmd + ':' + speedEl.value);
+    }
+
+    function releaseBtn() {
+      if (!activeBtn) return;
+      activeBtn.classList.remove('active');
+      activeBtn = null;
+      send('S');
+    }
+
+    // ── Pointer events (works for mouse + touch) ──────────────────────────
+    document.querySelectorAll('.btn[data-cmd]').forEach(btn => {
+      btn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        btn.setPointerCapture(e.pointerId);
+        pressBtn(btn);
+      });
+      btn.addEventListener('pointerup',     e => { e.preventDefault(); releaseBtn(); });
+      btn.addEventListener('pointercancel', ()  => releaseBtn());
+    });
+
+    // Fallback: release if pointer leaves the whole window
+    window.addEventListener('pointerup', releaseBtn);
+
+    connect();
+  </script>
+</body>
+</html>
+

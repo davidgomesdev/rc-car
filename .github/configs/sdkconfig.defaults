@@ -4,7 +4,11 @@
 
 # Some examples (ledc_simple, spi_loopback_async) require a larger than the default stack size for
 # the main thread.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16000
 
 # Async SPI only enabled when this config is disabled (it is enabled by default)
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+
+# WebSocket support for the HTTP server (required for remote control)
+CONFIG_HTTPD_WS_SUPPORT=y
+
