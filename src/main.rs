@@ -11,58 +11,43 @@ use esp_idf_hal::gpio::{Output, PinDriver};
 #[cfg(target_os = "espidf")]
 use esp_idf_hal::ledc::LedcDriver;
 
+/// Direction pins and PWM channel for a single DC motor.
+#[cfg(target_os = "espidf")]
+struct EspMotorDriver<'d> {
+    in1: PinDriver<'d, Output>,
+    in2: PinDriver<'d, Output>,
+    pwm: LedcDriver<'d>,
+}
+
 /// Hardware driver for four DC motors wired through two TB6612FNG chips.
 ///
 /// Pin assignment (adjust in `main` to match your wiring):
-///
-/// | Motor       | IN1   | IN2   | PWM    | LEDC ch |
-/// |-------------|-------|-------|--------|---------|
-/// | Front-Right | GPIO6 | GPIO5 | GPIO4  | ch0     |
-/// | Rear-Right  | GPIO7 | GPIO8 | GPIO16 | ch1     |
-/// | Front-Left  | GPIO38| GPIO39| GPIO40 | ch2     |
-/// | Rear-Left   | GPIO37| GPIO36| GPIO35 | ch3     |
 #[cfg(target_os = "espidf")]
 struct EspMotorController<'d> {
-    // Front-right motor (chip 1 – channel A)
-    fr_in1: PinDriver<'d, Output>,
-    fr_in2: PinDriver<'d, Output>,
-    fr_pwm: LedcDriver<'d>,
-    // Rear-right motor (chip 1 – channel B)
-    rr_in1: PinDriver<'d, Output>,
-    rr_in2: PinDriver<'d, Output>,
-    rr_pwm: LedcDriver<'d>,
-    // Front-left motor (chip 2 – channel A)
-    fl_in1: PinDriver<'d, Output>,
-    fl_in2: PinDriver<'d, Output>,
-    fl_pwm: LedcDriver<'d>,
-    // Rear-left motor (chip 2 – channel B)
-    rl_in1: PinDriver<'d, Output>,
-    rl_in2: PinDriver<'d, Output>,
-    rl_pwm: LedcDriver<'d>,
+    front_right: EspMotorDriver<'d>,
+    rear_right: EspMotorDriver<'d>,
+    front_left: EspMotorDriver<'d>,
+    rear_left: EspMotorDriver<'d>,
     max_duty: u32,
 }
 
 #[cfg(target_os = "espidf")]
 impl<'d> EspMotorController<'d> {
     /// Apply a [`MotorCommand`] to a single motor's direction pins and PWM channel.
-    fn drive_pins(
-        in1: &mut PinDriver<'_, Output>,
-        in2: &mut PinDriver<'_, Output>,
-        pwm: &mut LedcDriver<'_>,
-        cmd: MotorCommand,
-    ) -> anyhow::Result<()> {
-        if cmd.pins.in1_high { in1.set_high()? } else { in1.set_low()? }
-        if cmd.pins.in2_high { in2.set_high()? } else { in2.set_low()? }
-        pwm.set_duty(cmd.duty)?;
+    fn drive_pins(motor: &mut EspMotorDriver<'_>, cmd: MotorCommand) -> anyhow::Result<()> {
+        if cmd.pins.in1_high { motor.in1.set_high()? } else { motor.in1.set_low()? }
+        if cmd.pins.in2_high { motor.in2.set_high()? } else { motor.in2.set_low()? }
+        motor.pwm.set_duty(cmd.duty)?;
         Ok(())
     }
 
     /// Apply a [`CarCommand`] to all four motors simultaneously.
     fn apply(&mut self, cmd: &CarCommand) -> anyhow::Result<()> {
-        Self::drive_pins(&mut self.fr_in1, &mut self.fr_in2, &mut self.fr_pwm, cmd.front_right)?;
-        Self::drive_pins(&mut self.rr_in1, &mut self.rr_in2, &mut self.rr_pwm, cmd.rear_right)?;
-        Self::drive_pins(&mut self.fl_in1, &mut self.fl_in2, &mut self.fl_pwm, cmd.front_left)?;
-        Self::drive_pins(&mut self.rl_in1, &mut self.rl_in2, &mut self.rl_pwm, cmd.rear_left)?;
+        log::info!("→ {}", cmd.message);
+        Self::drive_pins(&mut self.front_right, cmd.front_right)?;
+        Self::drive_pins(&mut self.rear_right, cmd.rear_right)?;
+        Self::drive_pins(&mut self.front_left, cmd.front_left)?;
+        Self::drive_pins(&mut self.rear_left, cmd.rear_left)?;
         Ok(())
     }
 
@@ -87,56 +72,54 @@ fn main() -> anyhow::Result<()> {
     let peripherals = Peripherals::take()
         .map_err(|_| anyhow::anyhow!("Failed to take peripherals"))?;
 
-    // All four PWM channels share one timer at 25 kHz.
     let timer_cfg = TimerConfig::default().frequency(25_u32.kHz().into());
     let timer = LedcTimerDriver::new(peripherals.ledc.timer0, &timer_cfg)?;
 
-    // Initialise the first PWM channel first so we can read max_duty.
+    // Initialize the first PWM channel first so we can read max_duty.
     let fr_pwm = LedcDriver::new(peripherals.ledc.channel0, &timer, peripherals.pins.gpio4)?;
     let max_duty = fr_pwm.get_max_duty();
 
     let mut controller = EspMotorController {
-        // Front-right: GPIO4 PWM, GPIO6 IN1, GPIO5 IN2
-        fr_pwm,
-        fr_in1: PinDriver::output(peripherals.pins.gpio6)?,
-        fr_in2: PinDriver::output(peripherals.pins.gpio5)?,
-        // Rear-right: GPIO16 PWM, GPIO7 IN1, GPIO8 IN2
-        rr_pwm: LedcDriver::new(peripherals.ledc.channel1, &timer, peripherals.pins.gpio16)?,
-        rr_in1: PinDriver::output(peripherals.pins.gpio7)?,
-        rr_in2: PinDriver::output(peripherals.pins.gpio8)?,
-        // Front-left: GPIO40 PWM, GPIO38 IN1, GPIO39 IN2
-        fl_pwm: LedcDriver::new(peripherals.ledc.channel2, &timer, peripherals.pins.gpio40)?,
-        fl_in1: PinDriver::output(peripherals.pins.gpio38)?,
-        fl_in2: PinDriver::output(peripherals.pins.gpio39)?,
-        // Rear-left: GPIO35 PWM, GPIO37 IN1, GPIO36 IN2
-        rl_pwm: LedcDriver::new(peripherals.ledc.channel3, &timer, peripherals.pins.gpio35)?,
-        rl_in1: PinDriver::output(peripherals.pins.gpio37)?,
-        rl_in2: PinDriver::output(peripherals.pins.gpio36)?,
+        front_right: EspMotorDriver {
+            pwm: fr_pwm,
+            in1: PinDriver::output(peripherals.pins.gpio6)?,
+            in2: PinDriver::output(peripherals.pins.gpio5)?,
+        },
+        rear_right: EspMotorDriver {
+            pwm: LedcDriver::new(peripherals.ledc.channel1, &timer, peripherals.pins.gpio16)?,
+            in1: PinDriver::output(peripherals.pins.gpio7)?,
+            in2: PinDriver::output(peripherals.pins.gpio15)?,
+        },
+        front_left: EspMotorDriver {
+            pwm: LedcDriver::new(peripherals.ledc.channel2, &timer, peripherals.pins.gpio40)?,
+            in1: PinDriver::output(peripherals.pins.gpio38)?,
+            in2: PinDriver::output(peripherals.pins.gpio39)?,
+        },
+        rear_left: EspMotorDriver {
+            pwm: LedcDriver::new(peripherals.ledc.channel3, &timer, peripherals.pins.gpio35)?,
+            in1: PinDriver::output(peripherals.pins.gpio37)?,
+            in2: PinDriver::output(peripherals.pins.gpio36)?,
+        },
         max_duty,
     };
 
     // Safe state on boot.
     controller.stop()?;
 
-    // Demo sequence – replace with your own control logic.
     loop {
         let d = controller.max_duty;
-        let sequence: &[(&str, CarCommand)] = &[
-            ("forward  50%",  CarCommand::drive(50, d)),
-            ("stop",          CarCommand::stop(d)),
-            ("reverse  50%",  CarCommand::drive(-50, d)),
-            ("stop",          CarCommand::stop(d)),
-            ("turn left  60%",  CarCommand::turn_left(60, d)),
-            ("turn right 60%",  CarCommand::turn_right(60, d)),
-            ("spin left  40%",  CarCommand::spin_left(40, d)),
-            ("spin right 40%",  CarCommand::spin_right(40, d)),
-            ("stop",          CarCommand::stop(d)),
+        let sequence: &[CarCommand] = &[
+            CarCommand::drive(100, d),
+            CarCommand::stop(d),
+            CarCommand::turn_left(50, d),
+            CarCommand::stop(d),
+            CarCommand::turn_right(50, d),
+            CarCommand::stop(d),
         ];
 
-        for (label, cmd) in sequence {
-            log::info!("→ {label}");
+        for cmd in sequence {
             controller.apply(cmd)?;
-            FreeRtos::delay_ms(1500);
+            FreeRtos::delay_ms(1000);
         }
     }
 }
