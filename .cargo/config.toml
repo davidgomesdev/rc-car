@@ -8,6 +8,10 @@ rustflags = [ "--cfg",  "espidf_time64"]
 [env]
 ESP_IDF_SDKCONFIG_DEFAULTS = ".github/configs/sdkconfig.defaults"
 ESP_IDF_VERSION = "v5.5.3"
+CLIENT_WIFI_SSID = "REPLACE_ME"
+CLIENT_WIFI_PASSWORD = "REPLACE_ME"
+AP_WIFI_SSID = "RC-CAR"
+AP_WIFI_PASSWORD = "verysecure!"
 
 [unstable]
 build-std = ["std", "panic_abort"]
