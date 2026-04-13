@@ -12,3 +12,5 @@ CONFIG_SPI_MASTER_ISR_IN_IRAM=n
 # WebSocket support for the HTTP server (required for remote control)
 CONFIG_HTTPD_WS_SUPPORT=y
 
+# mDNS hostname for the device
+CONFIG_LWIP_LOCAL_HOSTNAME=rc-car

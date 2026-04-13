@@ -1,20 +1,27 @@
-use embedded_svc::ipv4::{Mask, RouterConfiguration, Subnet};
-use embedded_svc::wifi::Wifi;
 use rc_car::CarCommand;
 #[cfg(target_os = "espidf")]
 use rc_car::MotorCommand;
-use std::net::Ipv4Addr;
 
 // ── ESP-IDF target ────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "espidf")]
+use embedded_svc::ipv4::{Mask, RouterConfiguration, Subnet};
+#[cfg(target_os = "espidf")]
+use embedded_svc::wifi::Wifi;
+#[cfg(target_os = "espidf")]
 use esp_idf_hal::gpio::{Output, PinDriver};
 #[cfg(target_os = "espidf")]
 use esp_idf_hal::ledc::LedcDriver;
+#[cfg(target_os = "espidf")]
 use esp_idf_svc::ipv4;
+#[cfg(target_os = "espidf")]
 use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
+#[cfg(target_os = "espidf")]
 use esp_idf_svc::wifi::WifiDriver;
+#[cfg(target_os = "espidf")]
 use ipv4::Configuration;
+#[cfg(target_os = "espidf")]
+use std::net::Ipv4Addr;
 
 /// Direction pins and PWM channel for a single DC motor.
 #[cfg(target_os = "espidf")]
@@ -140,7 +147,8 @@ fn main() -> anyhow::Result<()> {
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
     use esp_idf_svc::sys::EspError;
     use esp_idf_svc::wifi::{
-        AccessPointConfiguration, AuthMethod, BlockingWifi, Configuration as WifiConfig, EspWifi,
+        AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration,
+        Configuration as WifiConfig, EspWifi,
     };
     use std::sync::{Arc, Mutex};
 
@@ -151,11 +159,12 @@ fn main() -> anyhow::Result<()> {
     let peripherals =
         Peripherals::take().map_err(|_| anyhow::anyhow!("Failed to take peripherals"))?;
 
-    // ── Wi-Fi access point ────────────────────────────────────────────────────
+    // ── Wi-Fi: try to connect, then fall back to access point ────────────────
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    let netif = EspNetif::new_with_conf(&NetifConfiguration {
+    let sta_netif = EspNetif::new(NetifStack::Sta)?;
+    let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(Configuration::Router(RouterConfiguration {
             subnet: Subnet {
                 gateway: Ipv4Addr::from_octets([192u8, 168u8, 1u8, 1u8]),
@@ -171,26 +180,48 @@ fn main() -> anyhow::Result<()> {
     let mut wifi = BlockingWifi::wrap(
         EspWifi::wrap_all(
             WifiDriver::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
-            EspNetif::new(NetifStack::Sta)?,
+            sta_netif,
             #[cfg(esp_idf_esp_wifi_softap_support)]
-            netif,
+            ap_netif,
         )?,
         sys_loop,
     )?;
 
-    wifi.set_configuration(&WifiConfig::AccessPoint(AccessPointConfiguration {
-        ssid: "RC-CAR".try_into().unwrap(),
+    // ── Try to connect to a known WiFi network first ─────────────────────────
+    let ssid = env!("CLIENT_WIFI_SSID");
+    let password = env!("CLIENT_WIFI_PASSWORD");
+
+    log::info!("Attempting to connect to WiFi SSID: {}", ssid);
+    wifi.set_configuration(&WifiConfig::Client(ClientConfiguration {
+        ssid: ssid.try_into().unwrap(),
+        password: password.try_into().unwrap(),
         auth_method: AuthMethod::WPA2Personal,
-        password: "verysecure!".try_into().unwrap(),
-        channel: 1,
         ..Default::default()
     }))?;
     wifi.start()?;
 
-    wifi.wait_netif_up()?;
+    if let Err(e) = wifi.connect() {
+        log::error!("Failed to connect to wifi {ssid} with password {password}. (Error: {e})");
 
-    let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
-    log::info!("Wi-Fi AP up — SSID: RC-CAR  IP: {}", ip);
+        let ssid = env!("AP_WIFI_SSID");
+        let password = env!("AP_WIFI_PASSWORD");
+
+        log::info!("Switching to access point mode");
+        wifi.stop()?;
+        wifi.set_configuration(&WifiConfig::AccessPoint(AccessPointConfiguration {
+            ssid: ssid.try_into()?,
+            auth_method: AuthMethod::WPA2Personal,
+            password: password.try_into()?,
+            channel: 1,
+            ..Default::default()
+        }))?;
+        wifi.start()?;
+        wifi.wait_netif_up()?;
+
+        let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
+
+        log::info!("Wi-Fi AP up — SSID: RC-CAR  IP: {}", ip);
+    }
 
     // ── HTTP + WebSocket server ───────────────────────────────────────────────
     let server_cfg = ServerConfig {
@@ -242,6 +273,12 @@ fn main() -> anyhow::Result<()> {
         Ok::<(), EspError>(())
     })?;
 
+    let ip = if wifi.wifi().sta_netif().is_up()? {
+        wifi.wifi().sta_netif().get_ip_info()?.ip
+    } else {
+        wifi.wifi().ap_netif().get_ip_info()?.ip
+    };
+
     // Forget wifi so it is never dropped (lives as long as the firmware runs).
     core::mem::forget(wifi);
 
@@ -277,7 +314,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     controller.stop()?;
-    log::info!("Motors ready. Open http://{} to control.", ip);
+    log::info!("Motors ready. Open http://{ip} to control.");
 
     // ── Main control loop (polls shared command every 50 ms) ─────────────────
     loop {
