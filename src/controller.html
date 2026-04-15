@@ -181,6 +181,34 @@
     // Fallback: release if pointer leaves the whole window
     window.addEventListener('pointerup', releaseBtn);
 
+    // ── Keyboard support (arrow keys) ─────────────────────────────────────
+    const keyMap = {
+      'ArrowUp':    'F',
+      'ArrowDown':  'B',
+      'ArrowLeft':  'L',
+      'ArrowRight': 'R'
+    };
+
+    const activeKeys = new Set();
+
+    document.addEventListener('keydown', e => {
+      const cmd = keyMap[e.key];
+      if (!cmd) return;
+      e.preventDefault();
+      if (activeKeys.has(cmd)) return; // already pressed
+      activeKeys.add(cmd);
+      const btn = document.getElementById('btn-' + cmd.toLowerCase());
+      if (btn) pressBtn(btn);
+    });
+
+    document.addEventListener('keyup', e => {
+      const cmd = keyMap[e.key];
+      if (!cmd) return;
+      e.preventDefault();
+      activeKeys.delete(cmd);
+      if (activeKeys.size === 0) releaseBtn();
+    });
+
     connect();
   </script>
 </body>
