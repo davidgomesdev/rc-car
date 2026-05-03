@@ -15,9 +15,11 @@ use esp_idf_hal::gpio::{Output, PinDriver};
 #[cfg(target_os = "espidf")]
 use esp_idf_hal::ledc::LedcDriver;
 #[cfg(target_os = "espidf")]
-use esp_idf_svc::http::Method;
+use esp_idf_svc::http::client::{Configuration as HttpClientConfig, EspHttpConnection};
 #[cfg(target_os = "espidf")]
 use esp_idf_svc::http::server::{Configuration as ServerConfig, EspHttpServer};
+#[cfg(target_os = "espidf")]
+use esp_idf_svc::http::Method;
 #[cfg(target_os = "espidf")]
 use esp_idf_svc::ipv4;
 #[cfg(target_os = "espidf")]
@@ -25,12 +27,12 @@ use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
 #[cfg(target_os = "espidf")]
 use esp_idf_svc::sys::EspError;
 #[cfg(target_os = "espidf")]
+use esp_idf_svc::wifi::WifiDriver;
+#[cfg(target_os = "espidf")]
 use esp_idf_svc::wifi::{
     AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration,
     Configuration as WifiConfig, EspWifi,
 };
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::wifi::WifiDriver;
 #[cfg(target_os = "espidf")]
 use ipv4::Configuration;
 #[cfg(target_os = "espidf")]
@@ -127,7 +129,14 @@ fn main() -> anyhow::Result<()> {
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    let sta_netif = EspNetif::new(NetifStack::Sta)?;
+    let sta_netif = EspNetif::new_with_conf(&NetifConfiguration {
+        ip_configuration: Some(ipv4::Configuration::Client(
+            ipv4::ClientConfiguration::DHCP(ipv4::DHCPClientSettings {
+                hostname: Some("rc-car".try_into().unwrap()),
+            }),
+        )),
+        ..NetifConfiguration::wifi_default_client()
+    })?;
     let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
         ip_configuration: Some(Configuration::Router(RouterConfiguration {
             subnet: Subnet {
@@ -300,7 +309,7 @@ fn start_access_point(wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<Ipv4Ad
 /// it tears down the server. `shared` is the command bus that the WS handler
 /// writes into and the main control loop reads from.
 #[cfg(target_os = "espidf")]
-fn run_web_server(shared: Arc<Mutex<RemoteCmd>>) -> anyhow::Result<EspHttpServer> {
+fn run_web_server(shared: Arc<Mutex<RemoteCmd>>) -> anyhow::Result<EspHttpServer<'static>> {
     let server_cfg = ServerConfig {
         stack_size: 10240,
         ..Default::default()
@@ -313,6 +322,37 @@ fn run_web_server(shared: Arc<Mutex<RemoteCmd>>) -> anyhow::Result<EspHttpServer
         req.into_ok_response()?
             .write_all(INDEX_HTML.as_bytes())
             .map(|_| ())
+    })?;
+
+    // Proxy: fetch camera status server-side to avoid CORS issues in the browser.
+    // GET /camerastatus?ip=<camera-ip> → 200 if camera is up, 502 otherwise.
+    server.fn_handler("/camerastatus", Method::Get, |req| {
+        let uri = req.uri();
+        let ip = uri
+            .split_once("ip=")
+            .map(|(_, v)| v.split('&').next().unwrap_or(v).trim())
+            .unwrap_or("");
+
+        let ok = if ip.is_empty() {
+            false
+        } else {
+            let url = format!("http://{}:8080/videostatus", ip);
+            let cfg = HttpClientConfig::default();
+            EspHttpConnection::new(&cfg)
+                .and_then(|mut conn| {
+                    conn.initiate_request(Method::Get, &url, &[])?;
+                    conn.initiate_response()?;
+                    Ok(conn.status() == 200)
+                })
+                .unwrap_or(false)
+        };
+
+        let mut resp = req.into_response(
+            if ok { 200 } else { 502 },
+            None,
+            &[("Content-Type", "text/plain")],
+        )?;
+        resp.write_all(if ok { b"ok" } else { b"error" }).map(|_| ())
     })?;
 
     // WebSocket handler: parse incoming text frames and push to shared state.
