@@ -10,13 +10,13 @@
       background: #0d0d0d;
       color: #e0e0e0;
       font-family: system-ui, sans-serif;
-      min-height: 100dvh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 20px;
-      padding: 16px;
+      gap: clamp(4px, 1.5vh, 20px);
+      padding: clamp(4px, 2vw, 16px);
       touch-action: none;
       -webkit-user-select: none;
       user-select: none;
@@ -42,6 +42,55 @@
     #dot.ok { background: #3f3; }
     #status-text { color: #777; }
 
+    #cam-status {
+      font-size: 0.75em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+    }
+    #cam-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #555;
+      transition: background 0.3s;
+    }
+    #cam-dot.ok  { background: #3f3; }
+    #cam-dot.err { background: #f44; }
+    #cam-status-text { color: #777; }
+
+    .ip-row {
+      width: 100%;
+      max-width: 300px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ip-row label { font-size: 0.8em; color: #888; white-space: nowrap; }
+    #ip-input {
+      flex: 1;
+      background: #1c1c1c;
+      border: 1px solid #2e2e2e;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 0.85em;
+      padding: 5px 8px;
+      outline: none;
+    }
+    #ip-input:focus { border-color: #0af; }
+
+    #camera {
+      width: 100%;
+      max-width: 480px;
+      max-height: 28vh;
+      aspect-ratio: 4/3;
+      background: #111;
+      border: 1px solid #2e2e2e;
+      border-radius: 10px;
+      object-fit: cover;
+      display: block;
+    }
+
     .speed-row {
       width: 100%;
       max-width: 300px;
@@ -49,15 +98,15 @@
       align-items: center;
       gap: 10px;
     }
-    .speed-row span { font-size: 0.8em; color: #888; white-space: nowrap; }
+    .speed-row label { font-size: 0.8em; color: #888; white-space: nowrap; }
     #speed-val { color: #0af; font-weight: bold; min-width: 38px; text-align: right; }
     #speed { flex: 1; accent-color: #0af; cursor: pointer; }
 
     .pad {
       display: grid;
-      grid-template-columns: repeat(3, 90px);
-      grid-template-rows: repeat(3, 90px);
-      gap: 10px;
+      grid-template-columns: repeat(3, clamp(64px, 18vw, 90px));
+      grid-template-rows: repeat(3, clamp(64px, 18vw, 90px));
+      gap: clamp(4px, 1.5vw, 10px);
     }
 
     .btn {
@@ -67,7 +116,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 2em;
+      font-size: clamp(1.2em, 5vw, 2em);
       cursor: pointer;
       transition: background 0.08s, border-color 0.08s, color 0.08s;
       -webkit-tap-highlight-color: transparent;
@@ -83,15 +132,26 @@
 <body>
   <header>
     <h1>🚗 RC CAR</h1>
-    <div id="status">
-      <div id="dot"></div>
-      <span id="status-text">Connecting…</span>
+    <div id="cam-status">
+      <div id="cam-dot"></div>
+      <span id="cam-status-text">Camera off</span>
     </div>
   </header>
 
+  <div class="ip-row">
+    <label for="ip-input">Camera IP</label>
+    <input type="text" id="ip-input" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
+  </div>
+
+  <img id="camera" alt="camera feed">
+
+  <div id="status">
+    <div id="dot"></div>
+    <span id="status-text">Connecting…</span>
+  </div>
+
   <div class="speed-row">
-    <span>Speed</span>
-    <input type="range" id="speed" min="10" max="100" value="75">
+    <label for="speed">Speed</label><input type="range" id="speed" min="10" max="100" value="75">
     <span id="speed-val">75%</span>
   </div>
 
@@ -120,9 +180,62 @@
     const statusText = document.getElementById('status-text');
     const speedEl    = document.getElementById('speed');
     const speedValEl = document.getElementById('speed-val');
+    const ipInput    = document.getElementById('ip-input');
+    const camImg     = document.getElementById('camera');
+    const camDot     = document.getElementById('cam-dot');
+    const camText    = document.getElementById('cam-status-text');
 
     let ws = null;
     let activeBtn = null;
+    let camStatusTimer = null;
+
+    // ── Camera IP (localStorage) ──────────────────────────────────────────
+    const STORAGE_KEY = 'rc_camera_ip';
+
+    function savedIp() {
+      return localStorage.getItem(STORAGE_KEY) || '';
+    }
+
+    function applyIp(ip) {
+      if (ip) {
+        camImg.src = 'http://' + ip + ':8080/video';
+      } else {
+        camImg.src = '';
+      }
+      pollCameraStatus(ip);
+    }
+
+    ipInput.value = savedIp();
+    applyIp(savedIp());
+
+    ipInput.addEventListener('input', () => {
+      const ip = ipInput.value.trim();
+      localStorage.setItem(STORAGE_KEY, ip);
+      applyIp(ip);
+    });
+
+    // ── Camera status polling ─────────────────────────────────────────────
+    function setCamStatus(state) {
+      // state: 'ok' | 'error' | 'off'
+      camDot.className = state === 'ok' ? 'ok' : state === 'error' ? 'err' : '';
+      camText.textContent = state === 'ok' ? 'Camera connected' : state === 'error' ? 'Camera error' : 'Camera off';
+    }
+
+    function pollCameraStatus(ip) {
+      clearTimeout(camStatusTimer);
+      if (!ip) { setCamStatus('off'); return; }
+
+      fetch('/camerastatus?ip=' + encodeURIComponent(ip), { signal: AbortSignal.timeout(5000) })
+        .then(r => {
+          setCamStatus(r.ok ? 'ok' : 'error');
+        })
+        .catch(() => {
+          setCamStatus('off');
+        })
+        .finally(() => {
+          camStatusTimer = setTimeout(() => pollCameraStatus(ipInput.value.trim()), 5000);
+        });
+    }
 
     // ── Speed slider ──────────────────────────────────────────────────────
     speedEl.addEventListener('input', () => {
@@ -213,4 +326,3 @@
   </script>
 </body>
 </html>
-
