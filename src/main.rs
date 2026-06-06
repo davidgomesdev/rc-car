@@ -1,52 +1,18 @@
-#[cfg(target_os = "espidf")]
-use rc_car::app::controller::{parse_cmd, to_car_command, RemoteCmd};
-
 // ── ESP-IDF target ────────────────────────────────────────────────────────────
 
 #[cfg(target_os = "espidf")]
-use embedded_svc::io::Write as _;
-#[cfg(target_os = "espidf")]
-use embedded_svc::ipv4::{Mask, RouterConfiguration, Subnet};
-#[cfg(target_os = "espidf")]
-use embedded_svc::wifi::Wifi;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::http::client::{Configuration as HttpClientConfig, EspHttpConnection};
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::http::server::{Configuration as ServerConfig, EspHttpServer};
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::http::Method;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::ipv4;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::sys::EspError;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::wifi::WifiDriver;
-#[cfg(target_os = "espidf")]
-use esp_idf_svc::wifi::{
-    AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration,
-    Configuration as WifiConfig, EspWifi,
-};
-#[cfg(target_os = "espidf")]
-use ipv4::Configuration;
-#[cfg(target_os = "espidf")]
-use std::net::Ipv4Addr;
-#[cfg(target_os = "espidf")]
-use std::sync::{Arc, Mutex};
-
-#[cfg(target_os = "espidf")]
-static INDEX_HTML: &str = include_str!("controller.html");
-
-#[cfg(target_os = "espidf")]
 fn main() -> anyhow::Result<()> {
-    use esp_idf_hal::delay::FreeRtos;
-    use esp_idf_hal::ledc::LedcTimerDriver;
     use esp_idf_hal::ledc::config::TimerConfig;
+    use esp_idf_hal::ledc::LedcTimerDriver;
     use esp_idf_hal::peripherals::Peripherals;
     use esp_idf_hal::units::*;
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::nvs::EspDefaultNvsPartition;
+
+    use rc_car::api::motors::MotorService;
+    use rc_car::api::web;
+    use rc_car::api::wifi::WifiService;
+    use rc_car::internal::gpio;
 
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -54,66 +20,19 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals =
         Peripherals::take().map_err(|_| anyhow::anyhow!("Failed to take peripherals"))?;
-
-    // ── Wi-Fi: try to connect, then fall back to access point ────────────────
     let sys_loop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    let sta_netif = EspNetif::new_with_conf(&NetifConfiguration {
-        ip_configuration: Some(ipv4::Configuration::Client(
-            ipv4::ClientConfiguration::DHCP(ipv4::DHCPClientSettings {
-                hostname: Some("rc-car".try_into().unwrap()),
-            }),
-        )),
-        ..NetifConfiguration::wifi_default_client()
-    })?;
-    let ap_netif = EspNetif::new_with_conf(&NetifConfiguration {
-        ip_configuration: Some(Configuration::Router(RouterConfiguration {
-            subnet: Subnet {
-                gateway: Ipv4Addr::from_octets([192u8, 168u8, 1u8, 1u8]),
-                mask: Mask(24),
-            },
-            dhcp_enabled: true,
-            dns: None,
-            secondary_dns: None,
-        })),
-        ..NetifConfiguration::wifi_default_router()
-    })?;
+    // ── Wi-Fi: connect, or fall back to access point ─────────────────────────
+    // `wifi` is kept alive for the whole program by this binding (the control
+    // loop below never returns), so the Wi-Fi driver is never dropped.
+    let wifi = WifiService::connect(peripherals.modem, sys_loop, nvs)?;
 
-    let mut wifi = BlockingWifi::wrap(
-        EspWifi::wrap_all(
-            WifiDriver::new(peripherals.modem, sys_loop.clone(), Some(nvs))?,
-            sta_netif,
-            #[cfg(esp_idf_esp_wifi_softap_support)]
-            ap_netif,
-        )?,
-        sys_loop,
-    )?;
-
-    if let Err(e) = connect_to_wifi(&mut wifi) {
-        log::error!("Failed to connect to client WiFi: {e}");
-        start_access_point(&mut wifi)?;
-    }
-
-    // Shared state: WebSocket handler writes, main loop reads.
-    let shared: Arc<Mutex<RemoteCmd>> = Arc::new(Mutex::new(RemoteCmd::Stop));
-    // _server must stay alive — dropping it tears down all HTTP/WS handlers.
-    let _server = run_web_server(Arc::clone(&shared))?;
-
-    let ip = if wifi.wifi().sta_netif().is_up()? {
-        wifi.wifi().sta_netif().get_ip_info()?.ip
-    } else {
-        wifi.wifi().ap_netif().get_ip_info()?.ip
-    };
-
-    // Forget wifi so it is never dropped (lives as long as the firmware runs).
-    core::mem::forget(wifi);
-
-    // ── Motor controller ──────────────────────────────────────────────────────
+    // ── Motors ───────────────────────────────────────────────────────────────
+    // `timer` must outlive the controller; it lives here on main's stack.
     let timer_cfg = TimerConfig::default().frequency(25_u32.kHz().into());
     let timer = LedcTimerDriver::new(peripherals.ledc.timer0, &timer_cfg)?;
-
-    let mut controller = rc_car::internal::gpio::build_controller(
+    let controller = gpio::build_controller(
         &timer,
         peripherals.ledc.channel0,
         peripherals.ledc.channel1,
@@ -121,149 +40,18 @@ fn main() -> anyhow::Result<()> {
         peripherals.ledc.channel3,
         peripherals.pins,
     )?;
-    let max_duty = controller.max_duty();
+    let motors = MotorService::new(controller);
+
+    // ── Web server (must stay alive; dropping it tears down all handlers) ─────
+    let _server = web::start(motors.command_bus())?;
+
+    let ip = wifi.ip()?;
     log::info!("Motors ready. Open http://{ip} to control.");
 
-    // ── Main control loop (polls shared command every 50 ms) ─────────────────
-    loop {
-        let cmd = *shared.lock().unwrap();
-        if let Err(e) = controller.apply(&to_car_command(cmd, max_duty)) {
-            log::error!("Motor apply error: {e}");
-        }
-        FreeRtos::delay_ms(50);
-    }
+    // Run the control loop forever. `wifi` and `_server` stay alive because this
+    // never returns.
+    motors.run()
 }
-
-#[cfg(target_os = "espidf")]
-fn connect_to_wifi(wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<()> {
-    let ssid = env!("CLIENT_WIFI_SSID");
-    let password = env!("CLIENT_WIFI_PASSWORD");
-
-    log::info!("Attempting to connect to WiFi SSID: {}", ssid);
-    wifi.set_configuration(&WifiConfig::Client(ClientConfiguration {
-        ssid: ssid.try_into().unwrap(),
-        password: password.try_into().unwrap(),
-        auth_method: AuthMethod::WPA2Personal,
-        ..Default::default()
-    }))?;
-    wifi.start()?;
-    wifi.connect()?;
-    Ok(())
-}
-
-#[cfg(target_os = "espidf")]
-fn start_access_point(wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<Ipv4Addr> {
-    let ssid = env!("AP_WIFI_SSID");
-    let password = env!("AP_WIFI_PASSWORD");
-
-    log::info!("Switching to access point mode");
-    wifi.stop()?;
-    wifi.set_configuration(&WifiConfig::AccessPoint(AccessPointConfiguration {
-        ssid: ssid.try_into()?,
-        auth_method: AuthMethod::WPA2Personal,
-        password: password.try_into()?,
-        channel: 1,
-        ..Default::default()
-    }))?;
-    wifi.start()?;
-    wifi.wait_netif_up()?;
-
-    let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
-    log::info!("Wi-Fi AP up — SSID: {ssid}  IP: {ip}");
-    Ok(ip)
-}
-
-// ── HTTP + WebSocket server ───────────────────────────────────────────────────
-
-/// Register all HTTP/WebSocket handlers and return the running server handle.
-///
-/// The handle **must be kept alive** for the duration of the program; dropping
-/// it tears down the server. `shared` is the command bus that the WS handler
-/// writes into and the main control loop reads from.
-#[cfg(target_os = "espidf")]
-fn run_web_server(shared: Arc<Mutex<RemoteCmd>>) -> anyhow::Result<EspHttpServer<'static>> {
-    let server_cfg = ServerConfig {
-        stack_size: 10240,
-        ..Default::default()
-    };
-    let mut server = EspHttpServer::new(&server_cfg)?;
-
-    // Serve the controller UI at /.
-    server.fn_handler("/", Method::Get, |req| {
-        log::info!("User visited page");
-        req.into_ok_response()?
-            .write_all(INDEX_HTML.as_bytes())
-            .map(|_| ())
-    })?;
-
-    // Proxy: fetch camera status server-side to avoid CORS issues in the browser.
-    // GET /camerastatus?ip=<camera-ip> → 200 if camera is up, 502 otherwise.
-    server.fn_handler("/camerastatus", Method::Get, |req| {
-        let uri = req.uri();
-        let ip = uri
-            .split_once("ip=")
-            .map(|(_, v)| v.split('&').next().unwrap_or(v).trim())
-            .unwrap_or("");
-
-        let ok = if ip.is_empty() {
-            false
-        } else {
-            let url = format!("http://{}:8080/videostatus", ip);
-            let cfg = HttpClientConfig::default();
-            EspHttpConnection::new(&cfg)
-                .and_then(|mut conn| {
-                    conn.initiate_request(Method::Get, &url, &[])?;
-                    conn.initiate_response()?;
-                    Ok(conn.status() == 200)
-                })
-                .unwrap_or(false)
-        };
-
-        let mut resp = req.into_response(
-            if ok { 200 } else { 502 },
-            None,
-            &[("Content-Type", "text/plain")],
-        )?;
-        resp.write_all(if ok { b"ok" } else { b"error" }).map(|_| ())
-    })?;
-
-    // WebSocket handler: parse incoming text frames and push to shared state.
-    // Only RemoteCmd (Copy) crosses the thread boundary — motor types stay on main.
-    let shared_ws = Arc::clone(&shared);
-    server.ws_handler("/ws", None, move |ws| {
-        if ws.is_new() {
-            log::info!("WS: client connected (session {})", ws.session());
-            return Ok(());
-        }
-        if ws.is_closed() {
-            log::info!("WS: client disconnected — stopping motors");
-            *shared_ws.lock().unwrap() = RemoteCmd::Stop;
-            return Ok(());
-        }
-
-        // ESP-IDF WS requires two recv calls: first with empty buf to get length,
-        // then with a sized buf to read the payload.
-        let (_frame_type, len) = ws.recv(&mut [])?;
-        if len == 0 || len > 32 {
-            return Ok(());
-        }
-        let mut buf = [0u8; 32];
-        ws.recv(&mut buf[..len])?;
-
-        let s = std::str::from_utf8(&buf[..len])
-            .unwrap_or("")
-            .trim_matches(|c: char| c.is_ascii_control() || c.is_whitespace());
-
-        log::info!("WS rx: '{s}'");
-        *shared_ws.lock().unwrap() = parse_cmd(s);
-
-        Ok::<(), EspError>(())
-    })?;
-
-    Ok(server)
-}
-
-// ── ESP-IDF main ──────────────────────────────────────────────────────────────
 
 // ── Host / simulation target ──────────────────────────────────────────────────
 
