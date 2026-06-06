@@ -216,6 +216,7 @@
 
     let gpIndex      = -1;           // index of active gamepad, -1 = none
     let gpRafId      = null;         // requestAnimationFrame handle
+    let prevSpeed    = -1;           // last sent speed, for change detection
     let prevButtons  = new Array(16).fill(false);  // previous frame button states
 
     const GP_DIR = [
@@ -235,10 +236,12 @@
       if (!gp || gp.buttons.length < 16) { gpRafId = requestAnimationFrame(gpPoll); return; }
 
       // R2 (button 7) → speed override
-      const r2 = gp.buttons[7].value;                       // float 0..1
+      const r2    = gp.buttons[7].value;                 // float 0..1
       const speed = Math.round(r2 * 100);
       speedEl.value          = speed;
       speedValEl.textContent = speed + '%';
+      const speedChanged = speed !== prevSpeed;
+      prevSpeed = speed;
 
       // Direction buttons: detect press / release edges
       let anyDir = false;
@@ -250,12 +253,24 @@
           // press edge
           const btn = document.getElementById(id);
           if (btn) pressBtn(btn);
+        } else if (!pressed && prevButtons[index]) {
+          // release edge — if this was the active button, switch to any still-held direction
+          if (activeBtn && activeBtn.id === id) {
+            const stillHeld = GP_DIR.find(d => d.index !== index && gp.buttons[d.index].pressed);
+            if (stillHeld) pressBtn(document.getElementById(stillHeld.id));
+          }
         }
         prevButtons[index] = pressed;
       }
 
       // If no direction button held this frame, release
       if (!anyDir) releaseBtn();
+
+      // Re-send command if speed changed while a direction is active
+      if (activeBtn && speedChanged && anyDir) {
+        const cmd = activeBtn.dataset.cmd;
+        if (cmd !== 'S') send(cmd + ':' + speed);
+      }
 
       gpRafId = requestAnimationFrame(gpPoll);
     }
