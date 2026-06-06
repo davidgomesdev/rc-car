@@ -121,9 +121,9 @@ The native host has **no runtime dependencies** — the `app` layer is pure Rust
 
 ## 5. App layer (`src/app/`)
 
-Everything in `app` is platform-agnostic (no `std` requirement, no ESP
-imports) and host-testable. It is declared in `lib.rs` as `pub mod app;` and
-lives in the `rc_car` crate.
+Everything in `app` is platform-agnostic (no ESP imports) and host-testable. It
+is declared in `lib.rs` as `pub mod app;` and lives in the `rc_car` crate. (It
+uses `std` — e.g. `String` in `CarCommand` — so it is not `no_std`.)
 
 The layer has three modules:
 
@@ -173,6 +173,7 @@ pub struct CarCommand {
     pub front_right: MotorCommand,
     pub rear_left: MotorCommand,
     pub rear_right: MotorCommand,
+    pub message: String,    // human-readable label for the command, e.g. "drive 50%"
 }
 
 impl CarCommand {
@@ -211,29 +212,33 @@ negating; calling them with a negative value is safe but treated as positive.
 
 ### `EspMotorController<'d>` (ESP-IDF only, `internal::motor_driver`)
 
-Owns all twelve HAL drivers (4 motors × IN1 + IN2 + PWM).  
-The lifetime `'d` is tied to the ESP peripheral ownership (`Peripherals::take()`).
+Composed of four `EspMotorDriver<'d>` — one per wheel — plus the shared
+`max_duty`. Each `EspMotorDriver` owns a single motor's two direction pins and
+its PWM channel. The lifetime `'d` ties the HAL drivers to the ESP peripheral
+ownership and the shared `LedcTimerDriver` borrow.
 
 ```
 EspMotorController<'d>
- ├── fr_in1 / fr_in2 : PinDriver<'d, Output>   — Front-Right direction
- ├── fr_pwm          : LedcDriver<'d>           — Front-Right PWM
- ├── rr_in1 / rr_in2 : PinDriver<'d, Output>   — Rear-Right direction
- ├── rr_pwm          : LedcDriver<'d>           — Rear-Right PWM
- ├── fl_in1 / fl_in2 : PinDriver<'d, Output>   — Front-Left direction
- ├── fl_pwm          : LedcDriver<'d>           — Front-Left PWM
- ├── rl_in1 / rl_in2 : PinDriver<'d, Output>   — Rear-Left direction
- ├── rl_pwm          : LedcDriver<'d>           — Rear-Left PWM
- └── max_duty        : u32
+ ├── front_right : EspMotorDriver<'d>   ┐  each driver owns:
+ ├── rear_right  : EspMotorDriver<'d>   │    in1 : PinDriver<'d, Output>
+ ├── front_left  : EspMotorDriver<'d>   │    in2 : PinDriver<'d, Output>
+ ├── rear_left   : EspMotorDriver<'d>   ┘    pwm : LedcDriver<'d>
+ └── max_duty    : u32
 ```
 
 **Methods:**
 
-| Method                               | Description                                      |
-|--------------------------------------|--------------------------------------------------|
-| `drive_pins(in1, in2, pwm, cmd)`     | Static helper — sets one motor's GPIO and duty   |
-| `apply(&mut self, cmd: &CarCommand)` | Drives all four motors from one `CarCommand`     |
-| `stop(&mut self)`                    | Convenience: `apply(CarCommand::stop(max_duty))` |
+| Type / method                                  | Description                                       |
+|------------------------------------------------|---------------------------------------------------|
+| `EspMotorDriver::new(in1, in2, pwm)`           | Build one motor's driver                          |
+| `EspMotorDriver::max_duty(&self)`              | Max PWM duty for this channel                      |
+| `EspMotorController::new(fr, rr, fl, rl, max)` | Build the four-motor controller                   |
+| `EspMotorController::max_duty(&self)`          | Shared max PWM duty                                |
+| `apply(&mut self, cmd: &CarCommand)`           | Drives all four motors from one `CarCommand`      |
+| `stop(&mut self)`                              | Convenience: `apply(CarCommand::stop(max_duty))`  |
+
+`EspMotorDriver::apply` (private) sets one motor's two direction pins and duty;
+`EspMotorController::apply` fans a `CarCommand` out to all four drivers.
 
 ### Controller construction (`internal::gpio::build_controller`)
 
@@ -274,8 +279,8 @@ When the target OS is not `espidf`, a simple `main()` prints the
 The `api` layer (ESP-only) holds the service modules, organised by concern:
 
 - **`api::wifi::WifiService`** — `connect(modem, sys_loop, nvs)` tries the
-  client SSID (`CLIENT_WIFI_SSID` / `CLIENT_WIFI_PASS`) and falls back to an
-  access point (`AP_WIFI_SSID` / `AP_WIFI_PASS`). `ip()` returns the current
+  client SSID (`CLIENT_WIFI_SSID` / `CLIENT_WIFI_PASSWORD`) and falls back to an
+  access point (`AP_WIFI_SSID` / `AP_WIFI_PASSWORD`). `ip()` returns the current
   address on demand. The owned `WifiService` is kept alive by a binding in
   `main` for the whole program (the control loop never returns).
 - **`api::motors::MotorService`** — owns the `EspMotorController` and exposes a
@@ -392,8 +397,9 @@ ESP-IDF HAL.
   `LedcDriver::get_max_duty()` once after the first channel is initialised
   and then stored in `EspMotorController::max_duty`.
 
-- **`CarCommand` is `Copy`.** All structs in the API derive `Copy`/`Clone`.
-  Prefer passing `&CarCommand` in hot paths to make intent clear.
+- **`CarCommand` is `Clone`, not `Copy`.** It carries a `String` `message`
+  field, so it only derives `Clone`. (`MotorCommand`, `Direction`, `MotorPins`
+  and `MotorId` are `Copy`.) Prefer passing `&CarCommand` in hot paths.
 
 - **No shared timer ownership issue.** Multiple `LedcDriver` instances can be
   created from `&LedcTimerDriver` (the HAL accepts `impl Borrow<LedcTimerDriver<'d>>`).
