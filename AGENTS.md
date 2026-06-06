@@ -25,9 +25,36 @@ rc-car/
 ├── README.md           # hardware wiring reference
 ├── AGENTS.md           # ← this file
 └── src/
-    ├── lib.rs          # platform-agnostic motor API (no std, no ESP types)
-    └── main.rs         # ESP-IDF hardware driver + host simulation entry point
+    ├── lib.rs              # module declarations only
+    ├── main.rs             # ESP orchestrator + host simulation
+    ├── controller.html     # web UI (served by api::web)
+    ├── app/                # app models — platform-agnostic, host-testable
+    │   ├── direction.rs    # Direction, MotorPins
+    │   ├── command.rs      # MotorCommand, CarCommand, MotorId (+ 11 tests)
+    │   └── controller.rs   # RemoteCmd, parse_cmd, to_car_command
+    ├── internal/           # internal models — ESP-only hardware abstraction
+    │   ├── gpio.rs         # build_controller: pin/channel assignment
+    │   └── motor_driver.rs # EspMotorDriver, EspMotorController
+    └── api/                # API layer — ESP-only services
+        ├── wifi.rs         # WifiService
+        ├── motors.rs       # MotorService (command bus + control loop)
+        └── web.rs          # HTTP/WebSocket server
 ```
+
+### Layered architecture
+
+The crate is split into three layers, declared in `lib.rs` (which contains
+nothing but `mod` declarations):
+
+- **`app`** — always compiled, platform-agnostic, host-testable. No `std`
+  requirement, no ESP imports. Contains `direction`, `command`, `controller`.
+- **`internal`** — ESP-only (`#[cfg(target_os = "espidf")]`). Hardware
+  abstraction over GPIO and the motor drivers.
+- **`api`** — ESP-only. Service modules organised by concern: Wi-Fi
+  connectivity, the motor command bus + control loop, and the HTTP/WS server.
+
+`main.rs` is a thin orchestrator: it wires the layers together and runs the
+control loop (ESP), or prints a `CarCommand` demo (host).
 
 ---
 
@@ -70,11 +97,13 @@ build-std = ["std", "panic_abort"]
 
 | Crate         | Version | Purpose                                                           |
 |---------------|---------|-------------------------------------------------------------------|
-| `anyhow`      | 1       | Error propagation with `?`                                        |
-| `esp-idf-hal` | 0.46.2  | GPIO (`PinDriver`) and LEDC PWM (`LedcDriver`, `LedcTimerDriver`) |
-| `esp-idf-svc` | 0.52.1  | Logging (`EspLogger`) and system patches (`link_patches`)         |
+| `anyhow`       | 1       | Error propagation with `?`                                        |
+| `log`          | 0.4     | Logging facade (`log::info!`), routed through `EspLogger`         |
+| `esp-idf-hal`  | 0.46.2  | GPIO (`PinDriver`) and LEDC PWM (`LedcDriver`, `LedcTimerDriver`) |
+| `esp-idf-svc`  | 0.52.1  | Wi-Fi, HTTP/WS server, logging (`EspLogger`), `link_patches`      |
+| `embedded-svc` | 0.29    | Wi-Fi/HTTP traits used by the `api` layer                         |
 
-The native host has **no runtime dependencies** — `lib.rs` is pure Rust.
+The native host has **no runtime dependencies** — the `app` layer is pure Rust.
 
 ### Build
 
@@ -90,12 +119,21 @@ The native host has **no runtime dependencies** — `lib.rs` is pure Rust.
 
 ---
 
-## 5. Public API (`src/lib.rs`)
+## 5. App layer (`src/app/`)
 
-Everything in `lib.rs` is platform-agnostic (no `std` requirement, no ESP
-imports). It lives in the `rc_car` crate.
+Everything in `app` is platform-agnostic (no `std` requirement, no ESP
+imports) and host-testable. It is declared in `lib.rs` as `pub mod app;` and
+lives in the `rc_car` crate.
 
-### Low-level — single motor
+The layer has three modules:
+
+- **`app::direction`** — `Direction`, `MotorPins`.
+- **`app::command`** — `MotorCommand`, `CarCommand`, `MotorId` (the motor API
+  below). The 11 unit tests live here.
+- **`app::controller`** — the remote-control protocol: `RemoteCmd`,
+  `parse_cmd`, `to_car_command` (see §6a).
+
+### Low-level — single motor (`app::command`, `app::direction`)
 
 ```rust
 pub enum Direction { Forward, Reverse, Stop }
@@ -169,9 +207,9 @@ negating; calling them with a negative value is safe but treated as positive.
 
 ---
 
-## 6. Hardware driver (`src/main.rs`)
+## 6. Internal layer (`src/internal/`)
 
-### `EspMotorController<'d>` (ESP-IDF only)
+### `EspMotorController<'d>` (ESP-IDF only, `internal::motor_driver`)
 
 Owns all twelve HAL drivers (4 motors × IN1 + IN2 + PWM).  
 The lifetime `'d` is tied to the ESP peripheral ownership (`Peripherals::take()`).
@@ -197,21 +235,25 @@ EspMotorController<'d>
 | `apply(&mut self, cmd: &CarCommand)` | Drives all four motors from one `CarCommand`     |
 | `stop(&mut self)`                    | Convenience: `apply(CarCommand::stop(max_duty))` |
 
-### Initialization sequence in `main()`
+### Controller construction (`internal::gpio::build_controller`)
+
+`build_controller` owns the default pin/channel map and returns a **stopped**
+controller. `main()` calls it after taking peripherals:
 
 1. `Peripherals::take()` — takes ownership of all peripherals.
-2. `LedcTimerDriver::new(timer0, 25 kHz)` — one shared PWM timer.
-3. `LedcDriver::new(channel0, &timer, gpio4)` — first channel; read `max_duty` from it.
-4. Construct `EspMotorController` with all remaining channels and GPIO pins.
-5. `controller.stop()` — safe state before any movement.
-6. Infinite demo loop using `CarCommand` variants with 1500 ms delays.
+2. `LedcTimerDriver::new(timer0, 25 kHz)` — one shared PWM timer, kept on
+   `main`'s stack (it must outlive the controller).
+3. `gpio::build_controller(&timer, channel0..3, pins)` — creates all four
+   `LedcDriver`s + direction pins, reads `max_duty`, and calls `stop()` before
+   returning.
+4. `MotorService::new(controller)` wraps it with the shared command bus.
 
 ### Default pin mapping
 
 | Motor       | IN1    | IN2    | PWM    | LEDC channel |
 |-------------|--------|--------|--------|--------------|
 | Front-Right | GPIO6  | GPIO5  | GPIO4  | ch0          |
-| Rear-Right  | GPIO7  | GPIO8  | GPIO16 | ch1          |
+| Rear-Right  | GPIO15 | GPIO7  | GPIO16 | ch1          |
 | Front-Left  | GPIO38 | GPIO39 | GPIO40 | ch2          |
 | Rear-Left   | GPIO37 | GPIO36 | GPIO35 | ch3          |
 
@@ -227,7 +269,63 @@ When the target OS is not `espidf`, a simple `main()` prints the
 
 ---
 
-## 7. Build & flash workflow
+## 6a. API layer & networking (`src/api/`)
+
+The `api` layer (ESP-only) holds the service modules, organised by concern:
+
+- **`api::wifi::WifiService`** — `connect(modem, sys_loop, nvs)` tries the
+  client SSID (`CLIENT_WIFI_SSID` / `CLIENT_WIFI_PASS`) and falls back to an
+  access point (`AP_WIFI_SSID` / `AP_WIFI_PASS`). `ip()` returns the current
+  address on demand. The owned `WifiService` is kept alive by a binding in
+  `main` for the whole program (the control loop never returns).
+- **`api::motors::MotorService`** — owns the `EspMotorController` and exposes a
+  shared `CommandBus = Arc<Mutex<RemoteCmd>>`. `command_bus()` hands a clone to
+  the web server; `run()` polls the bus every **50 ms** and applies the mapped
+  `CarCommand`. `run()` diverges (`-> !`).
+- **`api::web::start(command_bus)`** — starts the HTTP/WS server and returns the
+  server handle, which **must stay alive** (dropping it tears down the handlers).
+
+### Runtime control flow
+
+```
+boot
+ └─ WifiService::connect         (client SSID, AP fallback)
+     └─ gpio::build_controller   (stopped controller)
+         └─ MotorService::new
+             └─ web::start(command_bus)   ── WS writes RemoteCmd ──┐
+                 └─ MotorService::run  ── polls bus every 50 ms ───┘
+```
+
+Only `RemoteCmd` (a `Copy` enum) crosses the WebSocket thread boundary into the
+shared `Arc<Mutex<>>` bus — no hardware types are shared across threads.
+
+### HTTP / WebSocket endpoints
+
+| Route             | Method | Purpose                                              |
+|-------------------|--------|------------------------------------------------------|
+| `/`               | GET    | Serves `controller.html` (the web UI)                |
+| `/camerastatus?ip=` | GET  | Proxies the camera's `http://<ip>:8080/videostatus`  |
+| `/ws`             | WS     | Receives control commands (see wire protocol below)  |
+
+### Wire protocol (`app::controller::parse_cmd`)
+
+WebSocket text frames:
+
+- `"S"` → **Stop**.
+- `"<VERB>:<SPEED>"` where `SPEED` is `0..=100` (defaults to `75` if missing/
+  invalid) and `VERB` is one of:
+
+  | VERB | `RemoteCmd`            | Motion             |
+  |------|-----------------------|--------------------|
+  | `F`  | `Drive(speed)`        | forward            |
+  | `B`  | `Drive(-speed)`       | reverse            |
+  | `L`  | `TurnLeft(speed)`     | turn left          |
+  | `R`  | `TurnRight(speed)`    | turn right         |
+  | `SL` | `SpinLeft(speed)`     | spin in place left |
+  | `SR` | `SpinRight(speed)`    | spin in place right|
+
+  Any unknown verb maps to `Stop`. `to_car_command` then converts the
+  `RemoteCmd` into a `CarCommand` using `max_duty`.
 
 ### Run tests / host simulation
 
@@ -274,7 +372,7 @@ espflash flash --baud 460800 target/xtensa-esp32s3-espidf/release/rc-car
 
 ## 8. Testing
 
-All tests live in `src/lib.rs` (unit tests, `#[cfg(test)]`).  
+All tests live in `src/app/command.rs` (unit tests, `#[cfg(test)]`).  
 There are **11 tests** covering:
 
 - `MotorCommand::from_percent`: stop at 0, forward/reverse polarity, duty
@@ -300,6 +398,11 @@ ESP-IDF HAL.
 - **No shared timer ownership issue.** Multiple `LedcDriver` instances can be
   created from `&LedcTimerDriver` (the HAL accepts `impl Borrow<LedcTimerDriver<'d>>`).
   The timer lives on the stack in `main()` and outlives all channel drivers.
+
+- **Long-lived bindings instead of `forget`.** `wifi`, `timer`, and the web
+  server handle are owned by `main` and never dropped because `MotorService::run`
+  diverges (`-> !`) and `main`'s scope never exits. Keep these bindings — do not
+  let them be dropped.
 
 - **`embuild` `espidf` feature must be enabled unconditionally.** Without it,
   `build.rs` fails to compile even for host targets because the module path
