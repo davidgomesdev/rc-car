@@ -232,7 +232,7 @@
 
     function gpPoll() {
       const gp = navigator.getGamepads()[gpIndex];
-      if (!gp) { gpRafId = requestAnimationFrame(gpPoll); return; }
+      if (!gp || gp.buttons.length < 16) { gpRafId = requestAnimationFrame(gpPoll); return; }
 
       // R2 (button 7) → speed override
       const r2 = gp.buttons[7].value;                       // float 0..1
@@ -264,6 +264,7 @@
       gpIndex     = index;
       prevButtons = new Array(16).fill(false);
       setGpStatus(true);
+      speedEl.disabled = true;
       if (gpRafId) cancelAnimationFrame(gpRafId);
       gpRafId = requestAnimationFrame(gpPoll);
     }
@@ -272,6 +273,7 @@
       if (gpRafId) { cancelAnimationFrame(gpRafId); gpRafId = null; }
       gpIndex = -1;
       setGpStatus(false);
+      speedEl.disabled = false;
       releaseBtn();   // safe stop
     }
 
