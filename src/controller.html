@@ -160,6 +160,11 @@
   </header>
 
   <div class="ip-row">
+    <label for="server-ip-input">Server IP</label>
+    <input type="text" id="server-ip-input" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
+  </div>
+
+  <div class="ip-row">
     <label for="ip-input">Camera IP</label>
     <input type="text" id="ip-input" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
   </div>
@@ -197,12 +202,13 @@
   <p class="hint">Hold a button to drive · Release to stop · Gamepad: L2/R2 + D-pad ◀▶</p>
 
   <script>
-    const dot        = document.getElementById('dot');
-    const statusText = document.getElementById('status-text');
-    const speedEl    = document.getElementById('speed');
-    const speedValEl = document.getElementById('speed-val');
-    const ipInput    = document.getElementById('ip-input');
-    const camImg     = document.getElementById('camera');
+    const dot           = document.getElementById('dot');
+    const statusText    = document.getElementById('status-text');
+    const speedEl       = document.getElementById('speed');
+    const speedValEl    = document.getElementById('speed-val');
+    const ipInput       = document.getElementById('ip-input');
+    const serverIpInput = document.getElementById('server-ip-input');
+    const camImg        = document.getElementById('camera');
     const camDot     = document.getElementById('cam-dot');
     const camText    = document.getElementById('cam-status-text');
 
@@ -283,6 +289,17 @@
       releaseBtn();   // safe stop
     }
 
+    // ── Server IP (localStorage) ──────────────────────────────────────────
+    const SERVER_STORAGE_KEY = 'rc_server_ip';
+
+    serverIpInput.value = localStorage.getItem(SERVER_STORAGE_KEY) || '';
+
+    serverIpInput.addEventListener('input', () => {
+      localStorage.setItem(SERVER_STORAGE_KEY, serverIpInput.value.trim());
+      if (ws) { ws.onclose = null; ws.close(); }
+      connect();
+    });
+
     // ── Camera IP (localStorage) ──────────────────────────────────────────
     const STORAGE_KEY = 'rc_camera_ip';
 
@@ -348,7 +365,8 @@
 
     function connect() {
       setStatus(false, 'Connecting…');
-      ws = new WebSocket('ws://' + location.host + '/ws');
+      const host = serverIpInput.value.trim() || location.host;
+      ws = new WebSocket('ws://' + host + '/ws');
       ws.onopen  = () => setStatus(true, 'Connected');
       ws.onclose = () => {
         setStatus(false, 'Reconnecting…');
