@@ -1,6 +1,4 @@
 #[cfg(target_os = "espidf")]
-use rc_car::app::command::{CarCommand, MotorCommand};
-#[cfg(target_os = "espidf")]
 use rc_car::app::controller::{parse_cmd, to_car_command, RemoteCmd};
 
 // ── ESP-IDF target ────────────────────────────────────────────────────────────
@@ -11,10 +9,6 @@ use embedded_svc::io::Write as _;
 use embedded_svc::ipv4::{Mask, RouterConfiguration, Subnet};
 #[cfg(target_os = "espidf")]
 use embedded_svc::wifi::Wifi;
-#[cfg(target_os = "espidf")]
-use esp_idf_hal::gpio::{Output, PinDriver};
-#[cfg(target_os = "espidf")]
-use esp_idf_hal::ledc::LedcDriver;
 #[cfg(target_os = "espidf")]
 use esp_idf_svc::http::client::{Configuration as HttpClientConfig, EspHttpConnection};
 #[cfg(target_os = "espidf")]
@@ -40,57 +34,6 @@ use ipv4::Configuration;
 use std::net::Ipv4Addr;
 #[cfg(target_os = "espidf")]
 use std::sync::{Arc, Mutex};
-
-/// Direction pins and PWM channel for a single DC motor.
-#[cfg(target_os = "espidf")]
-struct EspMotorDriver<'d> {
-    in1: PinDriver<'d, Output>,
-    in2: PinDriver<'d, Output>,
-    pwm: LedcDriver<'d>,
-}
-
-/// Hardware driver for four DC motors wired through two TB6612FNG chips.
-#[cfg(target_os = "espidf")]
-struct EspMotorController<'d> {
-    front_right: EspMotorDriver<'d>,
-    rear_right: EspMotorDriver<'d>,
-    front_left: EspMotorDriver<'d>,
-    rear_left: EspMotorDriver<'d>,
-    max_duty: u32,
-}
-
-#[cfg(target_os = "espidf")]
-impl<'d> EspMotorController<'d> {
-    /// Apply a [`MotorCommand`] to a single motor's direction pins and PWM channel.
-    fn drive_pins(motor: &mut EspMotorDriver<'_>, cmd: MotorCommand) -> anyhow::Result<()> {
-        if cmd.pins.in1_high {
-            motor.in1.set_high()?
-        } else {
-            motor.in1.set_low()?
-        }
-        if cmd.pins.in2_high {
-            motor.in2.set_high()?
-        } else {
-            motor.in2.set_low()?
-        }
-        motor.pwm.set_duty(cmd.duty)?;
-        Ok(())
-    }
-
-    /// Apply a [`CarCommand`] to all four motors simultaneously.
-    fn apply(&mut self, cmd: &CarCommand) -> anyhow::Result<()> {
-        Self::drive_pins(&mut self.front_right, cmd.front_right)?;
-        Self::drive_pins(&mut self.rear_right, cmd.rear_right)?;
-        Self::drive_pins(&mut self.front_left, cmd.front_left)?;
-        Self::drive_pins(&mut self.rear_left, cmd.rear_left)?;
-        Ok(())
-    }
-
-    /// Convenience: stop every motor immediately.
-    fn stop(&mut self) -> anyhow::Result<()> {
-        self.apply(&CarCommand::stop(self.max_duty))
-    }
-}
 
 #[cfg(target_os = "espidf")]
 static INDEX_HTML: &str = include_str!("controller.html");
@@ -170,34 +113,15 @@ fn main() -> anyhow::Result<()> {
     let timer_cfg = TimerConfig::default().frequency(25_u32.kHz().into());
     let timer = LedcTimerDriver::new(peripherals.ledc.timer0, &timer_cfg)?;
 
-    let fr_pwm = LedcDriver::new(peripherals.ledc.channel0, &timer, peripherals.pins.gpio4)?;
-    let max_duty = fr_pwm.get_max_duty();
-
-    let mut controller = EspMotorController {
-        front_right: EspMotorDriver {
-            pwm: fr_pwm,
-            in1: PinDriver::output(peripherals.pins.gpio6)?,
-            in2: PinDriver::output(peripherals.pins.gpio5)?,
-        },
-        rear_right: EspMotorDriver {
-            pwm: LedcDriver::new(peripherals.ledc.channel1, &timer, peripherals.pins.gpio16)?,
-            in1: PinDriver::output(peripherals.pins.gpio15)?,
-            in2: PinDriver::output(peripherals.pins.gpio7)?,
-        },
-        front_left: EspMotorDriver {
-            pwm: LedcDriver::new(peripherals.ledc.channel2, &timer, peripherals.pins.gpio40)?,
-            in1: PinDriver::output(peripherals.pins.gpio38)?,
-            in2: PinDriver::output(peripherals.pins.gpio39)?,
-        },
-        rear_left: EspMotorDriver {
-            pwm: LedcDriver::new(peripherals.ledc.channel3, &timer, peripherals.pins.gpio35)?,
-            in1: PinDriver::output(peripherals.pins.gpio37)?,
-            in2: PinDriver::output(peripherals.pins.gpio36)?,
-        },
-        max_duty,
-    };
-
-    controller.stop()?;
+    let mut controller = rc_car::internal::gpio::build_controller(
+        &timer,
+        peripherals.ledc.channel0,
+        peripherals.ledc.channel1,
+        peripherals.ledc.channel2,
+        peripherals.ledc.channel3,
+        peripherals.pins,
+    )?;
+    let max_duty = controller.max_duty();
     log::info!("Motors ready. Open http://{ip} to control.");
 
     // ── Main control loop (polls shared command every 50 ms) ─────────────────
