@@ -210,6 +210,26 @@
     let activeBtn = null;
     let camStatusTimer = null;
 
+    // ── Gamepad support ───────────────────────────────────────────────────
+    const gpDot      = document.getElementById('gp-dot');
+    const gpText     = document.getElementById('gp-status-text');
+
+    let gpIndex      = -1;           // index of active gamepad, -1 = none
+    let gpRafId      = null;         // requestAnimationFrame handle
+    let prevButtons  = new Array(16).fill(false);  // previous frame button states
+
+    const GP_DIR = [
+      { index: 12, id: 'btn-f' },
+      { index: 13, id: 'btn-b' },
+      { index: 14, id: 'btn-l' },
+      { index: 15, id: 'btn-r' },
+    ];
+
+    function setGpStatus(connected) {
+      gpDot.className  = connected ? 'ok' : '';
+      gpText.textContent = connected ? 'Gamepad connected' : 'No gamepad';
+    }
+
     // ── Camera IP (localStorage) ──────────────────────────────────────────
     const STORAGE_KEY = 'rc_camera_ip';
 
