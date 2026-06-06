@@ -410,6 +410,24 @@
       if (activeKeys.size === 0) releaseBtn();
     });
 
+    // ── Gamepad connection/disconnection events ─────────────────────────────
+    window.addEventListener('gamepadconnected', e => {
+      if (gpIndex === -1) startGp(e.gamepad.index);
+    });
+
+    window.addEventListener('gamepaddisconnected', e => {
+      if (e.gamepad.index !== gpIndex) return;
+      // Try to find another connected gamepad
+      const fallback = [...navigator.getGamepads()].findIndex(
+        g => g && g.index !== e.gamepad.index
+      );
+      if (fallback !== -1) {
+        startGp(fallback);
+      } else {
+        stopGp();
+      }
+    });
+
     connect();
   </script>
 </body>
