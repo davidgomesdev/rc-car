@@ -59,6 +59,22 @@
     #cam-dot.err { background: #f44; }
     #cam-status-text { color: #777; }
 
+    #gp-status {
+      font-size: 0.75em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+    }
+    #gp-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #555;
+      transition: background 0.3s;
+    }
+    #gp-dot.ok { background: #3f3; }
+    #gp-status-text { color: #777; }
+
     .ip-row {
       width: 100%;
       max-width: 300px;
@@ -135,6 +151,10 @@
     <div id="cam-status">
       <div id="cam-dot"></div>
       <span id="cam-status-text">Camera off</span>
+    </div>
+    <div id="gp-status">
+      <div id="gp-dot"></div>
+      <span id="gp-status-text">No gamepad</span>
     </div>
   </header>
 
