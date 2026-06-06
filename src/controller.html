@@ -194,7 +194,7 @@
     <div class="btn empty"></div>
   </div>
 
-  <p class="hint">Hold a button to drive · Release to stop · Gamepad: R2 + D-pad</p>
+  <p class="hint">Hold a button to drive · Release to stop · Gamepad: L2/R2 + D-pad ◀▶</p>
 
   <script>
     const dot        = document.getElementById('dot');
@@ -217,14 +217,7 @@
     let gpIndex      = -1;           // index of active gamepad, -1 = none
     let gpRafId      = null;         // requestAnimationFrame handle
     let prevSpeed    = -1;           // last sent speed, for change detection
-    let prevButtons  = new Array(16).fill(false);  // previous frame button states
-
-    const GP_DIR = [
-      { index: 12, id: 'btn-f' },
-      { index: 13, id: 'btn-b' },
-      { index: 14, id: 'btn-l' },
-      { index: 15, id: 'btn-r' },
-    ];
+    let prevCmd      = null;         // last sent command, for change detection
 
     function setGpStatus(connected) {
       gpDot.className  = connected ? 'ok' : '';
@@ -235,49 +228,47 @@
       const gp = navigator.getGamepads()[gpIndex];
       if (!gp || gp.buttons.length < 16) { gpRafId = requestAnimationFrame(gpPoll); return; }
 
-      // R2 (button 7) → speed override
-      const r2    = gp.buttons[7].value;                 // float 0..1
-      const speed = Math.round(r2 * 100);
+      // Read triggers (float 0..1); R2 takes priority for speed if both held
+      const l2 = gp.buttons[6].value;
+      const r2 = gp.buttons[7].value;
+      const triggerVal = r2 > 0 ? r2 : l2;
+      const speed = Math.round(triggerVal * 100);
       speedEl.value          = speed;
       speedValEl.textContent = speed + '%';
       const speedChanged = speed !== prevSpeed;
       prevSpeed = speed;
 
-      // Direction buttons: detect press / release edges
-      let anyDir = false;
-      for (const { index, id } of GP_DIR) {
-        const pressed = gp.buttons[index].pressed;
-        if (pressed) anyDir = true;
+      // Determine command: arrows take priority over triggers
+      let cmd;
+      if      (gp.buttons[14].pressed) cmd = 'L';
+      else if (gp.buttons[15].pressed) cmd = 'R';
+      else if (r2 > 0)                 cmd = 'F';
+      else if (l2 > 0)                 cmd = 'B';
+      else                             cmd = 'S';
 
-        if (pressed && !prevButtons[index]) {
-          // press edge
-          const btn = document.getElementById(id);
+      // Update UI and send on command change
+      if (cmd !== prevCmd) {
+        if (cmd === 'S') {
+          releaseBtn();
+        } else {
+          const btn = document.getElementById('btn-' + cmd.toLowerCase());
           if (btn) pressBtn(btn);
-        } else if (!pressed && prevButtons[index]) {
-          // release edge — if this was the active button, switch to any still-held direction
-          if (activeBtn && activeBtn.id === id) {
-            const stillHeld = GP_DIR.find(d => d.index !== index && gp.buttons[d.index].pressed);
-            if (stillHeld) pressBtn(document.getElementById(stillHeld.id));
-          }
         }
-        prevButtons[index] = pressed;
+        prevCmd = cmd;
       }
 
-      // If no direction button held this frame, release
-      if (!anyDir) releaseBtn();
-
-      // Re-send command if speed changed while a direction is active
-      if (activeBtn && speedChanged && anyDir) {
-        const cmd = activeBtn.dataset.cmd;
-        if (cmd !== 'S') send(cmd + ':' + speed);
+      // Re-send on speed change while moving
+      if (activeBtn && speedChanged && cmd !== 'S') {
+        send(cmd + ':' + speed);
       }
 
       gpRafId = requestAnimationFrame(gpPoll);
     }
 
     function startGp(index) {
-      gpIndex     = index;
-      prevButtons = new Array(16).fill(false);
+      gpIndex   = index;
+      prevCmd   = null;
+      prevSpeed = -1;
       setGpStatus(true);
       speedEl.disabled = true;
       if (gpRafId) cancelAnimationFrame(gpRafId);
