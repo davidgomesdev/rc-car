@@ -6,7 +6,6 @@ use anyhow::Result;
 use std::net::Ipv4Addr;
 
 use embedded_svc::ipv4::{Mask, RouterConfiguration, Subnet};
-use embedded_svc::wifi::Wifi;
 use esp_idf_hal::modem::Modem;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::ipv4;
