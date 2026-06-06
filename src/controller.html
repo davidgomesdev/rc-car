@@ -230,6 +230,51 @@
       gpText.textContent = connected ? 'Gamepad connected' : 'No gamepad';
     }
 
+    function gpPoll() {
+      const gp = navigator.getGamepads()[gpIndex];
+      if (!gp) { gpRafId = requestAnimationFrame(gpPoll); return; }
+
+      // R2 (button 7) → speed override
+      const r2 = gp.buttons[7].value;                       // float 0..1
+      const speed = Math.round(r2 * 100);
+      speedEl.value          = speed;
+      speedValEl.textContent = speed + '%';
+
+      // Direction buttons: detect press / release edges
+      let anyDir = false;
+      for (const { index, id } of GP_DIR) {
+        const pressed = gp.buttons[index].pressed;
+        if (pressed) anyDir = true;
+
+        if (pressed && !prevButtons[index]) {
+          // press edge
+          const btn = document.getElementById(id);
+          if (btn) pressBtn(btn);
+        }
+        prevButtons[index] = pressed;
+      }
+
+      // If no direction button held this frame, release
+      if (!anyDir) releaseBtn();
+
+      gpRafId = requestAnimationFrame(gpPoll);
+    }
+
+    function startGp(index) {
+      gpIndex     = index;
+      prevButtons = new Array(16).fill(false);
+      setGpStatus(true);
+      if (gpRafId) cancelAnimationFrame(gpRafId);
+      gpRafId = requestAnimationFrame(gpPoll);
+    }
+
+    function stopGp() {
+      if (gpRafId) { cancelAnimationFrame(gpRafId); gpRafId = null; }
+      gpIndex = -1;
+      setGpStatus(false);
+      releaseBtn();   // safe stop
+    }
+
     // ── Camera IP (localStorage) ──────────────────────────────────────────
     const STORAGE_KEY = 'rc_camera_ip';
 
