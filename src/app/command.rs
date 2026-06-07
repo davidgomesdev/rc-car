@@ -97,17 +97,27 @@ impl CarCommand {
         }
     }
 
-    /// Turn left: right motors at `speed`, left motors stopped.
+    /// Arc left: right side at `speed`, left side stopped. Signed `speed`
+    /// selects direction — positive arcs forward-left, negative arcs back-left.
     pub fn turn_left(speed: i8, max_duty: u32) -> Self {
         let mut cmd = Self::steer(0, speed, max_duty);
-        cmd.message = format!("turn left {speed}%");
+        cmd.message = if speed >= 0 {
+            format!("forward left {speed}%")
+        } else {
+            format!("back left {}%", speed.unsigned_abs())
+        };
         cmd
     }
 
-    /// Turn right: left motors at `speed`, right motors stopped.
+    /// Arc right: left side at `speed`, right side stopped. Signed `speed`
+    /// selects direction — positive arcs forward-right, negative arcs back-right.
     pub fn turn_right(speed: i8, max_duty: u32) -> Self {
         let mut cmd = Self::steer(speed, 0, max_duty);
-        cmd.message = format!("turn right {speed}%");
+        cmd.message = if speed >= 0 {
+            format!("forward right {speed}%")
+        } else {
+            format!("back right {}%", speed.unsigned_abs())
+        };
         cmd
     }
 
@@ -252,6 +262,40 @@ mod tests {
         assert_eq!(cmd.rear_left.direction, Direction::Forward);
         assert_eq!(cmd.front_right.direction, Direction::Reverse);
         assert_eq!(cmd.rear_right.direction, Direction::Reverse);
+    }
+
+    #[test]
+    fn turn_left_backward_arc_stops_left_reverses_right() {
+        let cmd = CarCommand::turn_left(-75, 1000);
+        // Inner (left) side coasts/stops.
+        assert_eq!(cmd.front_left.direction, Direction::Stop);
+        assert_eq!(cmd.rear_left.direction, Direction::Stop);
+        assert_eq!(cmd.front_left.duty, 0);
+        // Outer (right) side drives in reverse.
+        assert_eq!(cmd.front_right.direction, Direction::Reverse);
+        assert_eq!(cmd.rear_right.direction, Direction::Reverse);
+        assert_eq!(cmd.front_right.duty, 750);
+    }
+
+    #[test]
+    fn turn_right_backward_arc_stops_right_reverses_left() {
+        let cmd = CarCommand::turn_right(-75, 1000);
+        // Inner (right) side coasts/stops.
+        assert_eq!(cmd.front_right.direction, Direction::Stop);
+        assert_eq!(cmd.rear_right.direction, Direction::Stop);
+        assert_eq!(cmd.front_right.duty, 0);
+        // Outer (left) side drives in reverse.
+        assert_eq!(cmd.front_left.direction, Direction::Reverse);
+        assert_eq!(cmd.rear_left.direction, Direction::Reverse);
+        assert_eq!(cmd.front_left.duty, 750);
+    }
+
+    #[test]
+    fn turn_left_forward_arc_still_drives_right_forward() {
+        let cmd = CarCommand::turn_left(75, 1000);
+        assert_eq!(cmd.front_left.direction, Direction::Stop);
+        assert_eq!(cmd.front_right.direction, Direction::Forward);
+        assert_eq!(cmd.front_right.duty, 750);
     }
 
     #[test]
