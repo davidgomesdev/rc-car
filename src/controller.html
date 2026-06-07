@@ -96,6 +96,7 @@
     }
     .ip-row input:focus { border-color: #0af; }
 
+    #camera-link { display: contents; }
     #camera {
       width: 100%;
       max-width: 480px;
@@ -169,7 +170,9 @@
     <input type="text" id="ip-input" placeholder="192.168.x.x" autocomplete="off" spellcheck="false">
   </div>
 
-  <img id="camera" alt="camera feed">
+  <a id="camera-link" href="#" target="_blank" rel="noopener">
+    <img id="camera" alt="camera feed">
+  </a>
 
   <div id="status">
     <div id="dot"></div>
@@ -209,6 +212,7 @@
     const ipInput       = document.getElementById('ip-input');
     const serverIpInput = document.getElementById('server-ip-input');
     const camImg        = document.getElementById('camera');
+    const cameraLink    = document.getElementById('camera-link');
     const camDot     = document.getElementById('cam-dot');
     const camText    = document.getElementById('cam-status-text');
 
@@ -309,9 +313,11 @@
 
     function applyIp(ip) {
       if (ip) {
-        camImg.src = 'http://' + ip + ':8080/video';
+        camImg.src       = 'http://' + ip + ':8080/video';
+        cameraLink.href  = 'http://' + ip + ':8080';
       } else {
-        camImg.src = '';
+        camImg.src      = '';
+        cameraLink.href = '#';
       }
       pollCameraStatus(ip);
     }
