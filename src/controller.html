@@ -219,8 +219,18 @@
     const camText    = document.getElementById('cam-status-text');
 
     let ws = null;
-    let activeBtn = null;
     let camStatusTimer = null;
+
+    // ── Movement input state ──────────────────────────────────────────────
+    // Throttle and steer are tracked independently, then combined into one
+    // wire command by resolve(). Several input sources feed the held-input
+    // sets below; the gamepad poll writes throttleDir/steerDir directly.
+    let throttleDir = 0;             // -1 = back, 0 = none, +1 = forward
+    let steerDir    = 0;             // -1 = left, 0 = none, +1 = right
+    let gpSpeed     = null;          // gamepad trigger speed 0..100, or null
+    let lastMsg     = null;          // last wire message sent, for de-dup
+    const pressedBtns = new Set();   // on-screen buttons currently held
+    const pressedKeys = new Set();   // arrow keys currently held
 
     // ── Gamepad support ───────────────────────────────────────────────────
     const gpDot      = document.getElementById('gp-dot');
@@ -228,8 +238,6 @@
 
     let gpIndex      = -1;           // index of active gamepad, -1 = none
     let gpRafId      = null;         // requestAnimationFrame handle
-    let prevSpeed    = -1;           // last sent speed, for change detection
-    let prevCmd      = null;         // last sent command, for change detection
 
     function setGpStatus(connected) {
       gpDot.className  = connected ? 'ok' : '';
@@ -240,47 +248,30 @@
       const gp = navigator.getGamepads()[gpIndex];
       if (!gp || gp.buttons.length < 16) { gpRafId = requestAnimationFrame(gpPoll); return; }
 
-      // Read triggers (float 0..1); R2 takes priority for speed if both held
-      const l2 = gp.buttons[6].value;
+      // Throttle from triggers (R2 = forward, takes priority over L2 = back).
       const r2 = gp.buttons[7].value;
-      const triggerVal = r2 > 0 ? r2 : l2;
-      const speed = Math.round(triggerVal * 100);
-      speedEl.value          = speed;
-      speedValEl.textContent = speed + '%';
-      const speedChanged = speed !== prevSpeed;
-      prevSpeed = speed;
+      const l2 = gp.buttons[6].value;
+      if      (r2 > 0) { throttleDir =  1; gpSpeed = Math.round(r2 * 100); }
+      else if (l2 > 0) { throttleDir = -1; gpSpeed = Math.round(l2 * 100); }
+      else             { throttleDir =  0; gpSpeed = null; }
 
-      // Determine command: arrows take priority over triggers
-      let cmd;
-      if      (gp.buttons[14].pressed) cmd = 'L';
-      else if (gp.buttons[15].pressed) cmd = 'R';
-      else if (r2 > 0)                 cmd = 'F';
-      else if (l2 > 0)                 cmd = 'B';
-      else                             cmd = 'S';
+      // Steer from D-pad left/right.
+      if      (gp.buttons[14].pressed) steerDir = -1;
+      else if (gp.buttons[15].pressed) steerDir =  1;
+      else                             steerDir =  0;
 
-      // Update UI and send on command change
-      if (cmd !== prevCmd) {
-        if (cmd === 'S') {
-          releaseBtn();
-        } else {
-          const btn = document.getElementById('btn-' + cmd.toLowerCase());
-          if (btn) pressBtn(btn);
-        }
-        prevCmd = cmd;
-      }
+      // Reflect the effective speed on the (disabled) slider for visibility.
+      const spd = currentSpeed();
+      speedEl.value          = spd;
+      speedValEl.textContent = spd + '%';
 
-      // Re-send on speed change while moving
-      if (activeBtn && speedChanged && cmd !== 'S') {
-        send(cmd + ':' + speed);
-      }
-
+      resolve();
       gpRafId = requestAnimationFrame(gpPoll);
     }
 
     function startGp(index) {
-      gpIndex   = index;
-      prevCmd   = null;
-      prevSpeed = -1;
+      gpIndex = index;
+      lastMsg = null;
       setGpStatus(true);
       speedEl.disabled = true;
       if (gpRafId) cancelAnimationFrame(gpRafId);
@@ -292,7 +283,8 @@
       gpIndex = -1;
       setGpStatus(false);
       speedEl.disabled = false;
-      releaseBtn();   // safe stop
+      stopAll();
+      resolve();   // sends 'S'
     }
 
     // ── Server IP (localStorage) ──────────────────────────────────────────
@@ -359,6 +351,7 @@
     // ── Speed slider ──────────────────────────────────────────────────────
     speedEl.addEventListener('input', () => {
       speedValEl.textContent = speedEl.value + '%';
+      recompute();   // live-update speed while a button/key is held
     });
 
     // ── WebSocket helpers ─────────────────────────────────────────────────
@@ -378,68 +371,99 @@
       ws.onopen  = () => setStatus(true, 'Connected');
       ws.onclose = () => {
         setStatus(false, 'Reconnecting…');
-        releaseBtn(); // safety stop
+        stopAll();      // reset local input state (server stops motors on close)
+        lastMsg = null;
         setTimeout(connect, 2000);
       };
       ws.onerror = () => ws.close();
     }
 
-    // ── Button press / release ────────────────────────────────────────────
-    function pressBtn(btn) {
-      if (activeBtn && activeBtn !== btn) releaseBtn();
-      activeBtn = btn;
-      btn.classList.add('active');
-      const cmd = btn.dataset.cmd;
-      send(cmd === 'S' ? 'S' : cmd + ':' + speedEl.value);
+    // ── Command resolution ────────────────────────────────────────────────
+    function currentSpeed() {
+      return gpSpeed !== null ? gpSpeed : parseInt(speedEl.value, 10);
     }
 
-    function releaseBtn() {
-      if (!activeBtn) return;
-      activeBtn.classList.remove('active');
-      activeBtn = null;
-      send('S');
+    // Combine throttle + steer + speed into one wire command; send on change.
+    function resolve() {
+      const spd = currentSpeed();
+      let msg;
+      if (steerDir !== 0 && throttleDir === 0) {
+        msg = (steerDir < 0 ? 'SL:' : 'SR:') + spd;        // spin in place
+      } else if (steerDir !== 0) {
+        const signed = throttleDir > 0 ? spd : -spd;       // arc (signed speed)
+        msg = (steerDir < 0 ? 'L:' : 'R:') + signed;
+      } else if (throttleDir !== 0) {
+        msg = (throttleDir > 0 ? 'F:' : 'B:') + spd;       // straight
+      } else {
+        msg = 'S';
+      }
+      if (msg !== lastMsg) { send(msg); lastMsg = msg; }
+      updateHighlights();
     }
 
-    // ── Pointer events (works for mouse + touch) ──────────────────────────
+    function updateHighlights() {
+      document.querySelectorAll('.btn[data-cmd]').forEach(b => b.classList.remove('active'));
+      const on = id => { const b = document.getElementById(id); if (b) b.classList.add('active'); };
+      if (throttleDir > 0) on('btn-f'); else if (throttleDir < 0) on('btn-b');
+      if (steerDir   < 0) on('btn-l'); else if (steerDir   > 0) on('btn-r');
+    }
+
+    // Recompute throttle/steer from held buttons + keys (non-gamepad input).
+    function recompute() {
+      if (gpIndex !== -1) return;        // gamepad is authoritative when connected
+      const down = c => pressedBtns.has(c) || pressedKeys.has(c);
+      throttleDir = down('F') ? 1 : down('B') ? -1 : 0;
+      steerDir    = down('L') ? -1 : down('R') ? 1 : 0;
+      resolve();
+    }
+
+    function stopAll() {
+      pressedBtns.clear(); pressedKeys.clear();
+      throttleDir = 0; steerDir = 0; gpSpeed = null;
+    }
+
+    // ── On-screen buttons (touch + mouse) ─────────────────────────────────
+    function applyButton(cmd, pressed) {
+      if (cmd === 'S') { if (pressed) { pressedBtns.clear(); pressedKeys.clear(); } }
+      else if (pressed) pressedBtns.add(cmd);
+      else pressedBtns.delete(cmd);
+      recompute();
+    }
+
     document.querySelectorAll('.btn[data-cmd]').forEach(btn => {
+      const cmd = btn.dataset.cmd;
       btn.addEventListener('pointerdown', e => {
         e.preventDefault();
         btn.setPointerCapture(e.pointerId);
-        pressBtn(btn);
+        applyButton(cmd, true);
       });
-      btn.addEventListener('pointerup',     e => { e.preventDefault(); releaseBtn(); });
-      btn.addEventListener('pointercancel', ()  => releaseBtn());
+      btn.addEventListener('pointerup',     e => { e.preventDefault(); applyButton(cmd, false); });
+      btn.addEventListener('pointercancel', ()  => applyButton(cmd, false));
     });
 
-    // Fallback: release if pointer leaves the whole window
-    window.addEventListener('pointerup', releaseBtn);
+    // Safety: clear all input if the window loses focus.
+    window.addEventListener('blur', () => { stopAll(); resolve(); });
 
-    // ── Keyboard support (arrow keys) ─────────────────────────────────────
-    const keyMap = {
-      'ArrowUp':    'F',
-      'ArrowDown':  'B',
-      'ArrowLeft':  'L',
-      'ArrowRight': 'R'
+    // ── Keyboard (arrow keys) ─────────────────────────────────────────────
+    const KEY_TO_CMD = {
+      ArrowUp: 'F', ArrowDown: 'B', ArrowLeft: 'L', ArrowRight: 'R'
     };
 
-    const activeKeys = new Set();
-
     document.addEventListener('keydown', e => {
-      const cmd = keyMap[e.key];
+      const cmd = KEY_TO_CMD[e.key];
       if (!cmd) return;
       e.preventDefault();
-      if (activeKeys.has(cmd)) return; // already pressed
-      activeKeys.add(cmd);
-      const btn = document.getElementById('btn-' + cmd.toLowerCase());
-      if (btn) pressBtn(btn);
+      if (pressedKeys.has(cmd)) return;  // ignore auto-repeat
+      pressedKeys.add(cmd);
+      recompute();
     });
 
     document.addEventListener('keyup', e => {
-      const cmd = keyMap[e.key];
+      const cmd = KEY_TO_CMD[e.key];
       if (!cmd) return;
       e.preventDefault();
-      activeKeys.delete(cmd);
-      if (activeKeys.size === 0) releaseBtn();
+      pressedKeys.delete(cmd);
+      recompute();
     });
 
     // ── Gamepad connection/disconnection events ─────────────────────────────
