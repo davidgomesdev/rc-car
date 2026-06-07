@@ -185,15 +185,17 @@
   </div>
 
   <!--
-    Layout:
-      [↺ SL]  [ ▲ F ]  [↻ SR]
-      [◀  L]  [ ■ S ]  [▶  R]
+    Layout (+ pad):
+      [ --- ]  [ ▲ F ]  [ --- ]
+      [ ◀  L]  [ ■ S ]  [ ▶  R]
       [ --- ]  [ ▼ B ]  [ --- ]
+    Hold a throttle (F/B) and a steer (L/R) together to arc.
+    Left/Right alone spins in place.
   -->
   <div class="pad">
-    <div class="btn" id="btn-sl" data-cmd="SL">↺</div>
+    <div class="btn empty"></div>
     <div class="btn" id="btn-f"  data-cmd="F">▲</div>
-    <div class="btn" id="btn-sr" data-cmd="SR">↻</div>
+    <div class="btn empty"></div>
     <div class="btn" id="btn-l"  data-cmd="L">◀</div>
     <div class="btn" id="btn-stop" data-cmd="S">■</div>
     <div class="btn" id="btn-r"  data-cmd="R">▶</div>
@@ -202,7 +204,7 @@
     <div class="btn empty"></div>
   </div>
 
-  <p class="hint">Hold a button to drive · Release to stop · Gamepad: L2/R2 + D-pad ◀▶</p>
+  <p class="hint">Throttle (▲▼) + steer (◀▶) together = arc · Steer alone = spin · Gamepad: L2/R2 + D-pad ◀▶</p>
 
   <script>
     const dot           = document.getElementById('dot');
